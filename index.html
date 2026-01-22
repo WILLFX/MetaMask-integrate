@@ -3,122 +3,143 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
-    <title>MetaMask SDK - Android Chrome Sepolia Test</title>
+    <title>MetaMask SDK (Android Chrome) – Connect Only</title>
 
     <!-- MetaMask SDK (Pure JS / CDN) -->
     <script src="https://c0f4f41c-2f55-4863-921b-sdk-docs.github.io/cdn/metamask-sdk.js"></script>
-
-    <!-- Ethers v6 UMD (for easy ABI encoding/decoding) -->
-    <script src="https://cdn.jsdelivr.net/npm/ethers@6.13.4/dist/ethers.umd.min.js"></script>
   </head>
 
   <body>
-    <button id="connect">Connect MetaMask</button>
-    <button id="read" disabled>Read ETH/USD (Sepolia)</button>
+    <button id="btnRequest">1) Request connect</button>
+    <button id="btnLaunch" disabled>2) Launch MetaMask</button>
+    <button id="btnAccounts" disabled>3) Get accounts</button>
+    <button id="btnDisconnect" disabled>Disconnect</button>
+
     <pre id="log"></pre>
 
     <script>
+      // ✅ Put your Infura key here (MUST be a string)
       const INFURA_KEY = "PASTE_YOUR_INFURA_KEY_HERE";
 
       const logEl = document.getElementById("log");
-      const btnConnect = document.getElementById("connect");
-      const btnRead = document.getElementById("read");
+      const log = (...args) => {
+        logEl.textContent += args.map(a => (typeof a === "string" ? a : JSON.stringify(a))).join(" ") + "\n";
+      };
 
-      function log(...args) {
-        logEl.textContent += args.map(a => (typeof a === "string" ? a : JSON.stringify(a, null, 2))).join(" ") + "\n";
-      }
+      const btnRequest = document.getElementById("btnRequest");
+      const btnLaunch = document.getElementById("btnLaunch");
+      const btnAccounts = document.getElementById("btnAccounts");
+      const btnDisconnect = document.getElementById("btnDisconnect");
 
-      function isAndroid() {
-        return /Android/i.test(navigator.userAgent);
-      }
+      const isAndroid = () => /Android/i.test(navigator.userAgent);
 
-      // Force MetaMask to foreground on Android Chrome by targeting the app package directly.
-      function androidIntentWrap(link) {
+      // Force Android to target MetaMask app directly (reduces chooser + background-launch quirks)
+      const androidIntentWrap = (link) => {
         try {
           const u = new URL(link);
-          const scheme = u.protocol.replace(":", ""); // https
+          const scheme = u.protocol.replace(":", "");
           return `intent://${u.host}${u.pathname}${u.search}${u.hash}#Intent;scheme=${scheme};package=io.metamask;end`;
         } catch (e) {
           return link;
         }
+      };
+
+      // ---- STATE ----
+      let pendingDeeplink = null;
+      let MMSDK = null;
+      let provider = null;
+
+      function initSdkOnce() {
+        if (MMSDK) return;
+
+        MMSDK = new MetaMaskSDK.MetaMaskSDK({
+          dappMetadata: {
+            name: "Chrome → MetaMask Connect (Bare)",
+            url: window.location.href,
+          },
+          infuraAPIKey: INFURA_KEY,
+
+          // IMPORTANT: capture deeplink, do NOT navigate here.
+          // We'll navigate only on an explicit user gesture (Launch button).
+          openDeeplink: (link) => {
+            pendingDeeplink = isAndroid() ? androidIntentWrap(link) : link;
+            log("Deeplink captured. Tap 'Launch MetaMask' to open the app.");
+            btnLaunch.disabled = false;
+          },
+        });
+
+        provider = MMSDK.getProvider();
+
+        // Helpful signals for progress after user approves in MetaMask
+        provider.on?.("accountsChanged", (accounts) => {
+          log("accountsChanged:", accounts);
+          if (accounts && accounts.length) btnAccounts.disabled = false;
+        });
+
+        provider.on?.("connect", (info) => log("provider connect:", info));
+        provider.on?.("disconnect", (err) => log("provider disconnect:", err?.message || err));
       }
 
-      const MMSDK = new MetaMaskSDK.MetaMaskSDK({
-        dappMetadata: {
-          name: "Bare MetaMask SDK Sepolia Test",
-          url: window.location.href,
-        },
-        infuraAPIKey: "2e4efadf229d4718933748e0fb680f17",
-
-        // The important part for your specific Android Chrome behavior:
-        openDeeplink: (link) => {
-          const target = isAndroid() ? androidIntentWrap(link) : link;
-          window.location.href = target;
-        },
-      });
-
-      const provider = MMSDK.getProvider();
-
-      const SEPOLIA_CHAIN_ID = "0xaa36a7"; // 11155111
-      const FEED_ETH_USD_SEPOLIA = "0x694AA1769357215DE4FAC081bf1f309aDC325306"; // Chainlink ETH/USD (Sepolia)
-      // Source: Chainlink docs list this Sepolia ETH/USD address. :contentReference[oaicite:3]{index=3}
-
-      const FEED_ABI = [
-        "function decimals() view returns (uint8)",
-        "function latestRoundData() view returns (uint80 roundId,int256 answer,uint256 startedAt,uint256 updatedAt,uint80 answeredInRound)"
-      ];
-
-      async function ensureSepolia() {
-        const chainId = await provider.request({ method: "eth_chainId" });
-        if (chainId === SEPOLIA_CHAIN_ID) return;
-
+      // 1) Request connect: starts the connect flow and should cause openDeeplink() to fire.
+      btnRequest.onclick = async () => {
         try {
-          await provider.request({
-            method: "wallet_switchEthereumChain",
-            params: [{ chainId: SEPOLIA_CHAIN_ID }],
-          });
-        } catch (err) {
-          log("Switch chain failed:", err?.message || err);
-          throw err;
-        }
-      }
+          initSdkOnce();
+          pendingDeeplink = null;
+          btnLaunch.disabled = true;
+          btnAccounts.disabled = true;
 
-      btnConnect.onclick = async () => {
-        try {
-          log("Connecting...");
-          const accounts = await MMSDK.connect();
-          log("Connected:", accounts[0]);
+          log("Requesting connection… (should capture deeplink)");
+          // This will trigger openDeeplink(...) internally
+          await MMSDK.connect();
 
-          const chainId = await provider.request({ method: "eth_chainId" });
-          log("chainId:", chainId);
-
-          btnRead.disabled = false;
+          log("Connect() resolved. If MetaMask approval happened, you can now fetch accounts.");
+          btnAccounts.disabled = false;
+          btnDisconnect.disabled = false;
         } catch (e) {
-          log("Connect error:", e?.message || e);
+          log("Request connect error:", e?.message || e);
         }
       };
 
-      btnRead.onclick = async () => {
+      // 2) Launch MetaMask: MUST be a clean user gesture; no async before navigation.
+      btnLaunch.onclick = () => {
+        if (!pendingDeeplink) {
+          log("No deeplink yet. Tap 'Request connect' first.");
+          return;
+        }
+        log("Launching MetaMask…");
+        window.location.href = pendingDeeplink;
+      };
+
+      // 3) Get accounts: call after returning to Chrome (or after accountsChanged fires)
+      btnAccounts.onclick = async () => {
         try {
-          await ensureSepolia();
-
-          const browserProvider = new ethers.BrowserProvider(provider);
-          const feed = new ethers.Contract(FEED_ETH_USD_SEPOLIA, FEED_ABI, browserProvider);
-
-          const decimals = await feed.decimals();
-          const data = await feed.latestRoundData();
-
-          // data.answer is int256; ethers v6 returns bigint-like values for ints
-          const price = ethers.formatUnits(data.answer, decimals);
-
-          log("ETH/USD (Sepolia):", price);
-          log("updatedAt:", data.updatedAt.toString());
+          if (!provider) throw new Error("SDK not initialized");
+          const accounts = await provider.request({ method: "eth_requestAccounts" });
+          log("Accounts:", accounts);
+          btnDisconnect.disabled = false;
         } catch (e) {
-          log("Read error:", e?.message || e);
+          log("Get accounts error:", e?.message || e);
+        }
+      };
+
+      btnDisconnect.onclick = async () => {
+        try {
+          if (MMSDK) await MMSDK.terminate();
+          log("Disconnected.");
+          pendingDeeplink = null;
+          MMSDK = null;
+          provider = null;
+
+          btnLaunch.disabled = true;
+          btnAccounts.disabled = true;
+          btnDisconnect.disabled = true;
+        } catch (e) {
+          log("Disconnect error:", e?.message || e);
         }
       };
     </script>
   </body>
 </html>
+
 
 
