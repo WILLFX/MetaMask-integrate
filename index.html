@@ -1,0 +1,145 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>MetaMask SDK Bare Demo (Sepolia)</title>
+
+    <!-- MetaMask SDK UMD bundle -->
+    <script src="https://cdn.jsdelivr.net/npm/@metamask/sdk@0.33.0/dist/browser/umd/metamask-sdk.js"></script>
+    <!-- File list for this UMD bundle is published by jsDelivr (metamask-sdk.js, iife variants, maps, etc.) -->
+    <!-- :contentReference[oaicite:5]{index=5} -->
+  </head>
+
+  <body>
+    <button id="connect">Connect MetaMask</button>
+    <button id="call" disabled>Sepolia: ETH/USD latestRoundData()</button>
+    <pre id="log"></pre>
+
+    <script>
+      (function () {
+        const INFURA_KEY = "YOUR_INFURA_KEY_HERE";
+
+        const SEPOLIA_CHAIN_ID = "0xaa36a7";
+        const SEPOLIA_RPC = "https://sepolia.infura.io/v3/" + INFURA_KEY;
+
+        // Chainlink ETH/USD price feed on Sepolia (proxy)
+        // Address documented by Chainlink for Sepolia ETH/USD. :contentReference[oaicite:6]{index=6}
+        const CHAINLINK_ETH_USD_FEED = "0x694AA1769357215DE4FAC081bf1f309aDC325306";
+
+        const logEl = document.getElementById("log");
+        const log = (...args) => {
+          logEl.textContent +=
+            args
+              .map((a) => (typeof a === "string" ? a : JSON.stringify(a, null, 2)))
+              .join(" ") + "\n";
+        };
+
+        // MetaMask SDK init (CDN/UMD style per MetaMask docs) :contentReference[oaicite:7]{index=7}
+        const sdk = new MetaMaskSDK.MetaMaskSDK({
+          dappMetadata: {
+            name: "Bare MetaMask SDK Demo",
+            url: window.location.href,
+          },
+          infuraAPIKey: INFURA_KEY,
+
+          // Key knob: force deeplink open via same-tab navigation.
+          // SDK supports openDeeplink option. :contentReference[oaicite:8]{index=8}
+          openDeeplink: (link) => {
+            window.location.href = link;
+          },
+        });
+
+        let provider = null;
+
+        function hexToWords32(hex) {
+          const clean = hex.startsWith("0x") ? hex.slice(2) : hex;
+          return clean.match(/.{1,64}/g) || [];
+        }
+
+        function decodeInt256(wordHex) {
+          const x = BigInt("0x" + wordHex);
+          const TWO_256 = 1n << 256n;
+          const TWO_255 = 1n << 255n;
+          return x >= TWO_255 ? x - TWO_256 : x;
+        }
+
+        async function ensureSepolia() {
+          const current = await provider.request({ method: "eth_chainId" });
+          if (current === SEPOLIA_CHAIN_ID) return;
+
+          try {
+            await provider.request({
+              method: "wallet_switchEthereumChain",
+              params: [{ chainId: SEPOLIA_CHAIN_ID }],
+            });
+          } catch (e) {
+            // 4902 = chain not added
+            const msg = (e && e.message) ? String(e.message) : "";
+            if (e && (e.code === 4902 || msg.includes("4902"))) {
+              await provider.request({
+                method: "wallet_addEthereumChain",
+                params: [{
+                  chainId: SEPOLIA_CHAIN_ID,
+                  chainName: "Sepolia",
+                  nativeCurrency: { name: "Sepolia ETH", symbol: "SEP", decimals: 18 },
+                  rpcUrls: [SEPOLIA_RPC],
+                  blockExplorerUrls: ["https://sepolia.etherscan.io"],
+                }],
+              });
+            } else {
+              throw e;
+            }
+          }
+        }
+
+        document.getElementById("connect").onclick = async () => {
+          try {
+            log("Connecting… (should jump to MetaMask app)");
+            const accounts = await sdk.connect(); // SDK connect method :contentReference[oaicite:9]{index=9}
+            provider = sdk.getProvider();          // SDK getProvider :contentReference[oaicite:10]{index=10}
+
+            log("Accounts:", accounts);
+            log("Chain:", await provider.request({ method: "eth_chainId" }));
+
+            document.getElementById("call").disabled = false;
+          } catch (e) {
+            log("Connect error:", e && e.message ? e.message : String(e));
+          }
+        };
+
+        document.getElementById("call").onclick = async () => {
+          try {
+            await ensureSepolia();
+            log("On Sepolia ✅");
+
+            // decimals() selector = 0x313ce567
+            const decRaw = await provider.request({
+              method: "eth_call",
+              params: [{ to: CHAINLINK_ETH_USD_FEED, data: "0x313ce567" }, "latest"],
+            });
+            const decimals = Number(BigInt(decRaw));
+
+            // latestRoundData() selector = 0xfeaf968c
+            // (Computed from keccak("latestRoundData()") first 4 bytes; standard ABI selector.)
+            const raw = await provider.request({
+              method: "eth_call",
+              params: [{ to: CHAINLINK_ETH_USD_FEED, data: "0xfeaf968c" }, "latest"],
+            });
+
+            const words = hexToWords32(raw);
+            // returns (roundId, answer, startedAt, updatedAt, answeredInRound)
+            const answer = decodeInt256(words[1]); // int256
+            const price = Number(answer) / Math.pow(10, decimals);
+
+            log("Chainlink feed:", CHAINLINK_ETH_USD_FEED);
+            log("Decimals:", decimals);
+            log("ETH/USD:", price);
+          } catch (e) {
+            log("Call error:", e && e.message ? e.message : String(e));
+          }
+        };
+      })();
+    </script>
+  </body>
+</html>
