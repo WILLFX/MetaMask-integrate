@@ -21,9 +21,9 @@
       }
 
       // ---- CONFIG ----
-      const projectId = "19acc37cc9d91b4b39b0cca952297654";
+      const projectId = "YOUR_PROJECT_ID_HERE";
 
-      // Sepolia chain id (we won't do the demo call yet, but we can request Sepolia)
+      // We'll target Sepolia, but we're not doing the demo call yet.
       const SEPOLIA = 11155111;
       const SEPOLIA_RPC = "https://rpc.sepolia.org";
 
@@ -41,10 +41,9 @@
           projectId,
           showQrModal: false,
 
-          // This matters on GitHub Pages, keep it consistent with where you're hosting
           metadata: {
             name: "Bare WC Demo",
-            description: "WalletConnect v2 bare HTML",
+            description: "WalletConnect v2 bare HTML (Chrome + MetaMask Mobile)",
             url: location.origin,
             icons: ["https://metamask.io/images/favicon-32.png"]
           },
@@ -56,8 +55,6 @@
         provider.on("display_uri", (uri) => {
           wcUri = uri;
           log("display_uri ready");
-
-          // Enable the "Open MetaMask" button once we have the URI
           btnOpenMM.disabled = false;
         });
 
@@ -75,6 +72,7 @@
 
         provider.on("accountsChanged", (accounts) => {
           log("accountsChanged:", JSON.stringify(accounts));
+          if (accounts && accounts[0]) log("account:", accounts[0]);
         });
 
         provider.on("chainChanged", (chainId) => {
@@ -93,9 +91,9 @@
       btnConnect.onclick = async () => {
         try {
           await ensureProvider();
+          log("Starting connection. Tap 'Open MetaMask' -> approve -> return here.");
 
-          log("Starting connection. After you tap 'Open MetaMask', approve, then return here.");
-          // This will trigger display_uri; it resolves only after approval in wallet
+          // Triggers display_uri; resolves after wallet approval
           await provider.connect();
 
           await showAccounts();
@@ -108,12 +106,19 @@
       btnOpenMM.onclick = () => {
         if (!wcUri) return;
 
-        // Prefer universal link (https navigation is friendlier in Chrome)
-        const universal = "https://metamask.app.link/wc?uri=" + encodeURIComponent(wcUri);
-        log("Opening MetaMask via:", universal);
+        const uri = encodeURIComponent(wcUri);
+        const isAndroid = /Android/i.test(navigator.userAgent);
 
-        // User-gesture navigation (no auto redirects)
-        location.href = universal;
+        // Android: prefer scheme link (often preserves wc params better)
+        const schemeLink = `metamask://wc?uri=${uri}`;
+
+        // Non-Android: universal link is usually fine
+        const universalLink = `https://metamask.app.link/wc?uri=${uri}`;
+
+        const target = isAndroid ? schemeLink : universalLink;
+
+        log("Opening MetaMask via:", target);
+        location.href = target; // user-gesture navigation
       };
 
       btnDisconnect.onclick = async () => {
@@ -125,11 +130,10 @@
         }
       };
 
-      // Optional: on reload, try to restore an existing session
+      // Try to restore any existing session on reload
       (async () => {
         try {
           await ensureProvider();
-          // If a session exists, accounts will show without re-pairing
           await showAccounts();
         } catch (_) {}
       })();
