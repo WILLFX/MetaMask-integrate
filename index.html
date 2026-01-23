@@ -1,145 +1,142 @@
 <!doctype html>
 <html>
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width,initial-scale=1" />
-    <title>MetaMask SDK (Android Chrome) – Connect Only</title>
-
-    <!-- MetaMask SDK (Pure JS / CDN) -->
-    <script src="https://c0f4f41c-2f55-4863-921b-sdk-docs.github.io/cdn/metamask-sdk.js"></script>
-  </head>
-
   <body>
-    <button id="btnRequest">1) Request connect</button>
-    <button id="btnLaunch" disabled>2) Launch MetaMask</button>
-    <button id="btnAccounts" disabled>3) Get accounts</button>
+    <button id="btnConnect">Connect</button>
+    <button id="btnOpenMM" disabled>Open MetaMask</button>
     <button id="btnDisconnect" disabled>Disconnect</button>
 
     <pre id="log"></pre>
 
+    <!-- WalletConnect v2 EthereumProvider (UMD build, no bundler) -->
+    <script src="https://unpkg.com/@walletconnect/ethereum-provider@2.23.3/dist/index.umd.js"></script>
+
     <script>
-      // ✅ Put your Infura key here (MUST be a string)
-      const INFURA_KEY = "2e4efadf229d4718933748e0fb680f17";
-
       const logEl = document.getElementById("log");
-      const log = (...args) => {
-        logEl.textContent += args.map(a => (typeof a === "string" ? a : JSON.stringify(a))).join(" ") + "\n";
-      };
-
-      const btnRequest = document.getElementById("btnRequest");
-      const btnLaunch = document.getElementById("btnLaunch");
-      const btnAccounts = document.getElementById("btnAccounts");
+      const btnConnect = document.getElementById("btnConnect");
+      const btnOpenMM = document.getElementById("btnOpenMM");
       const btnDisconnect = document.getElementById("btnDisconnect");
 
-      const isAndroid = () => /Android/i.test(navigator.userAgent);
-
-      // Force Android to target MetaMask app directly (reduces chooser + background-launch quirks)
-      const androidIntentWrap = (link) => {
-        try {
-          const u = new URL(link);
-          const scheme = u.protocol.replace(":", "");
-          return `intent://${u.host}${u.pathname}${u.search}${u.hash}#Intent;scheme=${scheme};package=io.metamask;end`;
-        } catch (e) {
-          return link;
-        }
-      };
-
-      // ---- STATE ----
-      let pendingDeeplink = null;
-      let MMSDK = null;
-      let provider = null;
-
-      function initSdkOnce() {
-        if (MMSDK) return;
-
-        MMSDK = new MetaMaskSDK.MetaMaskSDK({
-          dappMetadata: {
-            name: "Chrome → MetaMask Connect (Bare)",
-            url: window.location.href,
-          },
-          infuraAPIKey: INFURA_KEY,
-
-          // IMPORTANT: capture deeplink, do NOT navigate here.
-          // We'll navigate only on an explicit user gesture (Launch button).
-          openDeeplink: (link) => {
-            pendingDeeplink = isAndroid() ? androidIntentWrap(link) : link;
-            log("Deeplink captured. Tap 'Launch MetaMask' to open the app.");
-            btnLaunch.disabled = false;
-          },
-        });
-
-        provider = MMSDK.getProvider();
-
-        // Helpful signals for progress after user approves in MetaMask
-        provider.on?.("accountsChanged", (accounts) => {
-          log("accountsChanged:", accounts);
-          if (accounts && accounts.length) btnAccounts.disabled = false;
-        });
-
-        provider.on?.("connect", (info) => log("provider connect:", info));
-        provider.on?.("disconnect", (err) => log("provider disconnect:", err?.message || err));
+      function log(...args) {
+        logEl.textContent += args.map(String).join(" ") + "\n";
       }
 
-      // 1) Request connect: starts the connect flow and should cause openDeeplink() to fire.
-      btnRequest.onclick = async () => {
+      // ---- CONFIG ----
+      const projectId = "YOUR_PROJECT_ID_HERE";
+
+      // Sepolia chain id (we won't do the demo call yet, but we can request Sepolia)
+      const SEPOLIA = 11155111;
+      const SEPOLIA_RPC = "https://rpc.sepolia.org";
+
+      // ---- STATE ----
+      let provider = null;
+      let wcUri = null;
+
+      async function ensureProvider() {
+        if (provider) return provider;
+
+        const WC = window["@walletconnect/ethereum-provider"];
+        if (!WC?.EthereumProvider) throw new Error("WalletConnect EthereumProvider not loaded");
+
+        provider = await WC.EthereumProvider.init({
+          projectId,
+          showQrModal: false,
+
+          // This matters on GitHub Pages, keep it consistent with where you're hosting
+          metadata: {
+            name: "Bare WC Demo",
+            description: "WalletConnect v2 bare HTML",
+            url: location.origin,
+            icons: ["https://metamask.io/images/favicon-32.png"]
+          },
+
+          optionalChains: [SEPOLIA],
+          rpcMap: { [SEPOLIA]: SEPOLIA_RPC }
+        });
+
+        provider.on("display_uri", (uri) => {
+          wcUri = uri;
+          log("display_uri ready");
+
+          // Enable the "Open MetaMask" button once we have the URI
+          btnOpenMM.disabled = false;
+        });
+
+        provider.on("connect", (info) => {
+          log("connected:", JSON.stringify(info));
+          btnDisconnect.disabled = false;
+        });
+
+        provider.on("disconnect", () => {
+          log("disconnected");
+          btnOpenMM.disabled = true;
+          btnDisconnect.disabled = true;
+          wcUri = null;
+        });
+
+        provider.on("accountsChanged", (accounts) => {
+          log("accountsChanged:", JSON.stringify(accounts));
+        });
+
+        provider.on("chainChanged", (chainId) => {
+          log("chainChanged:", String(chainId));
+        });
+
+        return provider;
+      }
+
+      async function showAccounts() {
+        const accounts = await provider.request({ method: "eth_accounts" });
+        if (accounts && accounts[0]) log("account:", accounts[0]);
+        else log("account: (none yet)");
+      }
+
+      btnConnect.onclick = async () => {
         try {
-          initSdkOnce();
-          pendingDeeplink = null;
-          btnLaunch.disabled = true;
-          btnAccounts.disabled = true;
+          await ensureProvider();
 
-          log("Requesting connection… (should capture deeplink)");
-          // This will trigger openDeeplink(...) internally
-          await MMSDK.connect();
+          log("Starting connection. After you tap 'Open MetaMask', approve, then return here.");
+          // This will trigger display_uri; it resolves only after approval in wallet
+          await provider.connect();
 
-          log("Connect() resolved. If MetaMask approval happened, you can now fetch accounts.");
-          btnAccounts.disabled = false;
+          await showAccounts();
           btnDisconnect.disabled = false;
         } catch (e) {
-          log("Request connect error:", e?.message || e);
+          log("connect error:", e?.message || e);
         }
       };
 
-      // 2) Launch MetaMask: MUST be a clean user gesture; no async before navigation.
-      btnLaunch.onclick = () => {
-        if (!pendingDeeplink) {
-          log("No deeplink yet. Tap 'Request connect' first.");
-          return;
-        }
-        log("Launching MetaMask…");
-        window.location.href = pendingDeeplink;
-      };
+      btnOpenMM.onclick = () => {
+        if (!wcUri) return;
 
-      // 3) Get accounts: call after returning to Chrome (or after accountsChanged fires)
-      btnAccounts.onclick = async () => {
-        try {
-          if (!provider) throw new Error("SDK not initialized");
-          const accounts = await provider.request({ method: "eth_requestAccounts" });
-          log("Accounts:", accounts);
-          btnDisconnect.disabled = false;
-        } catch (e) {
-          log("Get accounts error:", e?.message || e);
-        }
+        // Prefer universal link (https navigation is friendlier in Chrome)
+        const universal = "https://metamask.app.link/wc?uri=" + encodeURIComponent(wcUri);
+        log("Opening MetaMask via:", universal);
+
+        // User-gesture navigation (no auto redirects)
+        location.href = universal;
       };
 
       btnDisconnect.onclick = async () => {
         try {
-          if (MMSDK) await MMSDK.terminate();
-          log("Disconnected.");
-          pendingDeeplink = null;
-          MMSDK = null;
-          provider = null;
-
-          btnLaunch.disabled = true;
-          btnAccounts.disabled = true;
-          btnDisconnect.disabled = true;
+          if (!provider) return;
+          await provider.disconnect();
         } catch (e) {
-          log("Disconnect error:", e?.message || e);
+          log("disconnect error:", e?.message || e);
         }
       };
+
+      // Optional: on reload, try to restore an existing session
+      (async () => {
+        try {
+          await ensureProvider();
+          // If a session exists, accounts will show without re-pairing
+          await showAccounts();
+        } catch (_) {}
+      })();
     </script>
   </body>
 </html>
+
 
 
 
