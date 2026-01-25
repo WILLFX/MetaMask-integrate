@@ -1,11 +1,25 @@
 <!doctype html>
 <html>
   <body>
-    <button id="btnConnect">Connect</button>
-    <button id="btnOpenMM" disabled>Open MetaMask</button>
-    <button id="btnDisconnect" disabled>Disconnect</button>
+    <h3>WC v2 + MetaMask (Android Chrome) | Sepolia demo</h3>
 
-    <pre id="log"></pre>
+    <div>
+      <label>
+        Project ID:
+        <input id="projectId" style="width:360px" placeholder="paste Reown/WC projectId" />
+      </label>
+      <button id="btnSave">Save</button>
+    </div>
+
+    <p>
+      <button id="btnConnect">Connect</button>
+      <button id="btnOpenMM" disabled>Open MetaMask</button>
+      <button id="btnRefresh" disabled>Refresh (accounts/balance)</button>
+      <button id="btnSendTiny" disabled>Send tiny tx (optional)</button>
+      <button id="btnDisconnect" disabled>Disconnect</button>
+    </p>
+
+    <pre id="log" style="white-space: pre-wrap; border:1px solid #444; padding:10px;"></pre>
 
     <!-- WalletConnect v2 EthereumProvider (UMD build, no bundler) -->
     <script src="https://unpkg.com/@walletconnect/ethereum-provider@2.23.3/dist/index.umd.js"></script>
@@ -14,22 +28,49 @@
       const logEl = document.getElementById("log");
       const btnConnect = document.getElementById("btnConnect");
       const btnOpenMM = document.getElementById("btnOpenMM");
+      const btnRefresh = document.getElementById("btnRefresh");
+      const btnSendTiny = document.getElementById("btnSendTiny");
       const btnDisconnect = document.getElementById("btnDisconnect");
+      const projectIdInput = document.getElementById("projectId");
 
       function log(...args) {
         logEl.textContent += args.map(String).join(" ") + "\n";
       }
 
-      // ---- CONFIG ----
-      const projectId = "19acc37cc9d91b4b39b0cca952297654";
+      // ---- Sepolia constants ----
+      const SEPOLIA_DEC = 11155111;                 // chainId decimal
+      const SEPOLIA_HEX = "0xaa36a7";               // chainId hex :contentReference[oaicite:1]{index=1}
+      const SEPOLIA_RPC = "https://rpc.sepolia.org"; // public RPC :contentReference[oaicite:2]{index=2}
 
-      // We'll target Sepolia, but we're not doing the demo call yet.
-      const SEPOLIA = 11155111;
-      const SEPOLIA_RPC = "https://rpc.sepolia.org";
-
-      // ---- STATE ----
+      // ---- state ----
       let provider = null;
       let wcUri = null;
+      let connectPromise = null;
+
+      function isAndroid() {
+        return /Android/i.test(navigator.userAgent || "");
+      }
+
+      function formatEthFromWeiHex(hexWei) {
+        const wei = BigInt(hexWei);
+        const ETH = 10n ** 18n;
+        const whole = wei / ETH;
+        const frac = wei % ETH;
+        // show up to 6 decimals without floating point
+        const fracStr = (frac + ETH).toString().slice(1).slice(0, 6).replace(/0+$/, "");
+        return fracStr ? `${whole}.${fracStr}` : `${whole}`;
+      }
+
+      function loadProjectId() {
+        const saved = localStorage.getItem("wc_projectId") || "";
+        projectIdInput.value = saved;
+      }
+
+      function saveProjectId() {
+        const v = projectIdInput.value.trim();
+        localStorage.setItem("wc_projectId", v);
+        log("Saved projectId.");
+      }
 
       async function ensureProvider() {
         if (provider) return provider;
@@ -37,19 +78,23 @@
         const WC = window["@walletconnect/ethereum-provider"];
         if (!WC?.EthereumProvider) throw new Error("WalletConnect EthereumProvider not loaded");
 
+        const projectId = projectIdInput.value.trim();
+        if (!projectId) throw new Error("Missing projectId (paste it first)");
+
         provider = await WC.EthereumProvider.init({
           projectId,
           showQrModal: false,
 
           metadata: {
-            name: "Bare WC Demo",
-            description: "WalletConnect v2 bare HTML (Chrome + MetaMask Mobile)",
+            name: "Bare WC Sepolia Demo",
+            description: "index.html WC v2 demo (Android Chrome + MetaMask)",
             url: location.origin,
-            icons: ["https://metamask.io/images/favicon-32.png"]
+            icons: []
           },
 
-          optionalChains: [SEPOLIA],
-          rpcMap: { [SEPOLIA]: SEPOLIA_RPC }
+          // We’ll use Sepolia for the demo call
+          optionalChains: [SEPOLIA_DEC],
+          rpcMap: { [SEPOLIA_DEC]: SEPOLIA_RPC }
         });
 
         provider.on("display_uri", (uri) => {
@@ -59,87 +104,171 @@
         });
 
         provider.on("connect", (info) => {
-          log("connected:", JSON.stringify(info));
-          btnDisconnect.disabled = false;
+          log("provider connect event:", JSON.stringify(info));
         });
 
-        provider.on("disconnect", () => {
-          log("disconnected");
-          btnOpenMM.disabled = true;
-          btnDisconnect.disabled = true;
+        provider.on("disconnect", (err) => {
+          log("disconnected", err?.message || "");
           wcUri = null;
+          btnOpenMM.disabled = true;
+          btnRefresh.disabled = true;
+          btnSendTiny.disabled = true;
+          btnDisconnect.disabled = true;
         });
 
-        provider.on("accountsChanged", (accounts) => {
-          log("accountsChanged:", JSON.stringify(accounts));
-          if (accounts && accounts[0]) log("account:", accounts[0]);
-        });
-
-        provider.on("chainChanged", (chainId) => {
-          log("chainChanged:", String(chainId));
-        });
+        provider.on("accountsChanged", (a) => log("accountsChanged:", JSON.stringify(a)));
+        provider.on("chainChanged", (c) => log("chainChanged:", String(c)));
 
         return provider;
       }
 
-      async function showAccounts() {
-        const accounts = await provider.request({ method: "eth_accounts" });
-        if (accounts && accounts[0]) log("account:", accounts[0]);
-        else log("account: (none yet)");
+      function openMetaMask() {
+        if (!wcUri) return;
+
+        const enc = encodeURIComponent(wcUri);
+
+        // Android: scheme link is often the most reliable
+        const schemeLink = `metamask://wc?uri=${enc}`;
+
+        // Others: universal link is fine
+        const universalLink = `https://metamask.app.link/wc?uri=${enc}`;
+
+        const target = isAndroid() ? schemeLink : universalLink;
+        log("Opening MetaMask via:", target);
+        location.href = target;
       }
+
+      async function switchToSepolia() {
+        try {
+          await provider.request({
+            method: "wallet_switchEthereumChain",
+            params: [{ chainId: SEPOLIA_HEX }]
+          });
+          return true;
+        } catch (e) {
+          // Some wallets require adding the chain first (rare for Sepolia in MetaMask)
+          // We try add as fallback.
+          try {
+            await provider.request({
+              method: "wallet_addEthereumChain",
+              params: [{
+                chainId: SEPOLIA_HEX,
+                chainName: "Sepolia",
+                nativeCurrency: { name: "SepoliaETH", symbol: "ETH", decimals: 18 },
+                rpcUrls: [SEPOLIA_RPC],
+                blockExplorerUrls: ["https://sepolia.etherscan.io"]
+              }]
+            });
+            return true;
+          } catch (e2) {
+            log("Could not switch/add Sepolia:", e2?.message || e2);
+            log("Tip: switch to Sepolia manually in MetaMask, then hit Refresh.");
+            return false;
+          }
+        }
+      }
+
+      async function refreshAccountsAndBalance() {
+        const accounts = await provider.request({ method: "eth_accounts" });
+        const addr = accounts?.[0];
+        if (!addr) {
+          log("No account yet. Make sure you approved connection in MetaMask.");
+          return;
+        }
+
+        const chainIdHex = await provider.request({ method: "eth_chainId" });
+        log("Account:", addr);
+        log("ChainId:", chainIdHex);
+
+        // Demo call on Sepolia: get balance
+        const balHex = await provider.request({
+          method: "eth_getBalance",
+          params: [addr, "latest"]
+        });
+
+        log("Balance (wei hex):", balHex);
+        log("Balance (ETH):", formatEthFromWeiHex(balHex));
+      }
+
+      async function sendTinyTx() {
+        const accounts = await provider.request({ method: "eth_accounts" });
+        const from = accounts?.[0];
+        if (!from) return log("No account. Connect first.");
+
+        // 0.00001 ETH in wei = 10^13 wei = 0x2386F26FC10000
+        // Needs Sepolia ETH for gas. If you have none, MetaMask will fail the send.
+        const valueHex = "0x2386f26fc10000";
+
+        const txHash = await provider.request({
+          method: "eth_sendTransaction",
+          params: [{
+            from,
+            to: from,          // send to self for a harmless demo
+            value: valueHex
+          }]
+        });
+
+        log("Sent tx:", txHash);
+      }
+
+      btnSave.onclick = saveProjectId;
 
       btnConnect.onclick = async () => {
         try {
           await ensureProvider();
-          log("Starting connection. Tap 'Open MetaMask' -> approve -> return here.");
 
-          // Triggers display_uri; resolves after wallet approval
-          await provider.connect();
+          log("Starting connection...");
+          log("Tap 'Open MetaMask' -> approve -> return here.");
 
-          await showAccounts();
-          btnDisconnect.disabled = false;
+          // Start connect but don’t block UI
+          connectPromise = provider.connect();
+
+          connectPromise.then(async () => {
+            log("Approved ✅");
+            btnRefresh.disabled = false;
+            btnSendTiny.disabled = false;
+            btnDisconnect.disabled = false;
+
+            // Switch to Sepolia then run the demo call
+            await switchToSepolia();
+            await refreshAccountsAndBalance();
+          }).catch((e) => {
+            log("connect failed:", e?.message || e);
+          });
+
         } catch (e) {
-          log("connect error:", e?.message || e);
+          log("Connect error:", e?.message || e);
         }
       };
 
-      btnOpenMM.onclick = () => {
-        if (!wcUri) return;
-
-        const uri = encodeURIComponent(wcUri);
-        const isAndroid = /Android/i.test(navigator.userAgent);
-
-        // Android: prefer scheme link (often preserves wc params better)
-        const schemeLink = `metamask://wc?uri=${uri}`;
-
-        // Non-Android: universal link is usually fine
-        const universalLink = `https://metamask.app.link/wc?uri=${uri}`;
-
-        const target = isAndroid ? schemeLink : universalLink;
-
-        log("Opening MetaMask via:", target);
-        location.href = target; // user-gesture navigation
+      btnOpenMM.onclick = openMetaMask;
+      btnRefresh.onclick = async () => {
+        await switchToSepolia();
+        await refreshAccountsAndBalance();
       };
-
+      btnSendTiny.onclick = async () => {
+        try {
+          await switchToSepolia();
+          await sendTinyTx();
+        } catch (e) {
+          log("send error:", e?.message || e);
+        }
+      };
       btnDisconnect.onclick = async () => {
         try {
-          if (!provider) return;
           await provider.disconnect();
         } catch (e) {
           log("disconnect error:", e?.message || e);
         }
       };
 
-      // Try to restore any existing session on reload
-      (async () => {
-        try {
-          await ensureProvider();
-          await showAccounts();
-        } catch (_) {}
-      })();
+      loadProjectId();
+      log("Ready.");
+      log("If MetaMask approval doesn’t appear, ensure MetaMask is unlocked and any in-app lock is off during testing.");
     </script>
   </body>
 </html>
+
 
 
 
