@@ -46,12 +46,6 @@
         return fracStr ? `${whole.toString()}.${fracStr}` : whole.toString();
       }
 
-      // Clear previous provider on page load or refresh
-      function resetProvider() {
-        provider = null;
-        wcUri = null;
-      }
-
       async function ensureProvider() {
         if (provider) return provider;
 
@@ -175,11 +169,12 @@
           await ensureProvider();
           log("Starting connection. Tap 'Open MetaMask' -> approve -> return here.");
 
-          // Parallelize: Connect and Switch
-          await Promise.all([
-            provider.connect(),  // Connect first
-            ensureSepoliaNetwork()  // Attempt Sepolia switch at the same time
-          ]);
+          // Initiate connection and chain switch simultaneously
+          const connectPromise = provider.connect();
+          const switchPromise = ensureSepoliaNetwork();
+
+          // Wait for the connection and network switch to complete
+          await Promise.all([connectPromise, switchPromise]);
 
           const acct = await getAccount();
           log("account:", acct || "(none)");
@@ -216,8 +211,17 @@
         }
       };
 
-      // Clear the provider on page load or refresh
-      resetProvider();
+      // Try to restore an existing session on reload
+      (async () => {
+        try {
+          await ensureProvider();
+          const acct = await getAccount();
+          if (acct) {
+            log("restored account:", acct);
+            await showBalance(acct);
+          }
+        } catch (_) {}
+      })();
 
       // Balance button functionality
       btnBalance.onclick = async () => {
@@ -232,5 +236,6 @@
     </script>
   </body>
 </html>
+
 
 
