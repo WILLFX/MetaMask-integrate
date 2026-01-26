@@ -46,6 +46,12 @@
         return fracStr ? `${whole.toString()}.${fracStr}` : whole.toString();
       }
 
+      // Clear previous provider on page load or refresh
+      function resetProvider() {
+        provider = null;
+        wcUri = null;
+      }
+
       async function ensureProvider() {
         if (provider) return provider;
 
@@ -198,7 +204,7 @@
 
         const target = isAndroid ? schemeLink : universalLink;
         log("Opening MetaMask via:", target);
-        location.href = target;
+        location.href = target; // user-gesture navigation
       };
 
       btnDisconnect.onclick = async () => {
@@ -210,17 +216,8 @@
         }
       };
 
-      // Try to restore an existing session on reload
-      (async () => {
-        try {
-          await ensureProvider();
-          const acct = await getAccount();
-          if (acct) {
-            log("restored account:", acct);
-            await showBalance(acct);
-          }
-        } catch (_) {}
-      })();
+      // Clear the provider on page load or refresh
+      resetProvider();
 
       // Balance button functionality
       btnBalance.onclick = async () => {
@@ -235,4 +232,5 @@
     </script>
   </body>
 </html>
+
 
