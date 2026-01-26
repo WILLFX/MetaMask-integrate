@@ -21,15 +21,30 @@
       }
 
       // ---- CONFIG ----
-      const projectId = "2e4efadf229d4718933748e0fb680f17";
+      const projectId = "19acc37cc9d91b4b39b0cca952297654";
 
-      // We'll target Sepolia, but we're not doing the demo call yet.
+      // Sepolia
       const SEPOLIA = 11155111;
-      const SEPOLIA_RPC = "https://rpc.sepolia.org";
+      const SEPOLIA_HEX = "0xaa36a7"; // 11155111
+      const SEPOLIA_RPC_PRIMARY = "https://rpc.sepolia.org";
+      const SEPOLIA_RPC_SECONDARY = "https://rpc2.sepolia.org";
+      const SEPOLIA_EXPLORER = "https://sepolia.etherscan.io";
 
       // ---- STATE ----
       let provider = null;
       let wcUri = null;
+
+      function formatEthFromHexWei(hexWei) {
+        // hexWei like "0x..."
+        const wei = BigInt(hexWei);
+        const base = 1000000000000000000n;
+
+        const whole = wei / base;
+        const frac = wei % base;
+
+        let fracStr = frac.toString().padStart(18, "0").replace(/0+$/, "");
+        return fracStr ? `${whole.toString()}.${fracStr}` : whole.toString();
+      }
 
       async function ensureProvider() {
         if (provider) return provider;
@@ -48,8 +63,9 @@
             icons: ["https://metamask.io/images/favicon-32.png"]
           },
 
+          // We want Sepolia available once connected.
           optionalChains: [SEPOLIA],
-          rpcMap: { [SEPOLIA]: SEPOLIA_RPC }
+          rpcMap: { [SEPOLIA]: SEPOLIA_RPC_PRIMARY }
         });
 
         provider.on("display_uri", (uri) => {
@@ -82,21 +98,100 @@
         return provider;
       }
 
-      async function showAccounts() {
+      async function getAccount() {
         const accounts = await provider.request({ method: "eth_accounts" });
-        if (accounts && accounts[0]) log("account:", accounts[0]);
-        else log("account: (none yet)");
+        return accounts && accounts[0] ? accounts[0] : null;
+      }
+
+      async function showBalance(account) {
+        if (!account) {
+          log("balance: (no account)");
+          return;
+        }
+        const balHex = await provider.request({
+          method: "eth_getBalance",
+          params: [account, "latest"]
+        });
+        log("Sepolia balance (ETH):", formatEthFromHexWei(balHex));
+      }
+
+      async function ensureSepoliaNetwork() {
+        // Check current chain
+        const currentHex = await provider.request({ method: "eth_chainId" });
+        log("current chainId:", currentHex);
+
+        if (String(currentHex).toLowerCase() === SEPOLIA_HEX) {
+          log("Already on Sepolia.");
+          return;
+        }
+
+        // Try switch first
+        try {
+          log("Requesting switch to Sepolia...");
+          await provider.request({
+            method: "wallet_switchEthereumChain",
+            params: [{ chainId: SEPOLIA_HEX }]
+          });
+          log("Switched to Sepolia.");
+          return;
+        } catch (e) {
+          const code = e && (e.code ?? e?.data?.originalError?.code);
+          const msg = e && (e.message || String(e));
+
+          log("switch error:", msg);
+
+          // 4902 = chain not added (common MetaMask behavior)
+          if (code === 4902) {
+            log("Sepolia not added. Requesting add network...");
+            await provider.request({
+              method: "wallet_addEthereumChain",
+              params: [{
+                chainId: SEPOLIA_HEX,
+                chainName: "Sepolia",
+                nativeCurrency: { name: "ETH", symbol: "ETH", decimals: 18 },
+                rpcUrls: [SEPOLIA_RPC_PRIMARY, SEPOLIA_RPC_SECONDARY],
+                blockExplorerUrls: [SEPOLIA_EXPLORER]
+              }]
+            });
+
+            log("Network add requested. Now switching to Sepolia...");
+            await provider.request({
+              method: "wallet_switchEthereumChain",
+              params: [{ chainId: SEPOLIA_HEX }]
+            });
+
+            log("Switched to Sepolia after adding.");
+            return;
+          }
+
+          // Not a "not added" error: user rejected or wallet limitation
+          throw e;
+        }
       }
 
       btnConnect.onclick = async () => {
         try {
           await ensureProvider();
+
           log("Starting connection. Tap 'Open MetaMask' -> approve -> return here.");
 
           // Triggers display_uri; resolves after wallet approval
           await provider.connect();
 
-          await showAccounts();
+          const acct = await getAccount();
+          log("account:", acct || "(none)");
+
+          // Auto switch (and add if needed)
+          try {
+            await ensureSepoliaNetwork();
+          } catch (e) {
+            log("Sepolia switch/add failed:", e?.message || e);
+            log("If MetaMask showed a prompt, make sure you approved it.");
+          }
+
+          // Show balance (on whatever chain you ended up on, ideally Sepolia)
+          await showBalance(acct);
+
           btnDisconnect.disabled = false;
         } catch (e) {
           log("connect error:", e?.message || e);
@@ -109,14 +204,13 @@
         const uri = encodeURIComponent(wcUri);
         const isAndroid = /Android/i.test(navigator.userAgent);
 
-        // Android: prefer scheme link (often preserves wc params better)
+        // Android: scheme often preserves wc params better.
         const schemeLink = `metamask://wc?uri=${uri}`;
 
-        // Non-Android: universal link is usually fine
+        // Non-Android fallback
         const universalLink = `https://metamask.app.link/wc?uri=${uri}`;
 
         const target = isAndroid ? schemeLink : universalLink;
-
         log("Opening MetaMask via:", target);
         location.href = target; // user-gesture navigation
       };
@@ -130,11 +224,15 @@
         }
       };
 
-      // Try to restore any existing session on reload
+      // Try to restore an existing session on reload
       (async () => {
         try {
           await ensureProvider();
-          await showAccounts();
+          const acct = await getAccount();
+          if (acct) {
+            log("restored account:", acct);
+            await showBalance(acct);
+          }
         } catch (_) {}
       })();
     </script>
