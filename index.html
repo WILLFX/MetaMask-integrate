@@ -3,6 +3,7 @@
   <body>
     <button id="btnConnect">Connect</button>
     <button id="btnOpenMM" disabled>Open MetaMask</button>
+    <button id="btnBalance" disabled>Switch to Sepolia + Show Balance</button>
     <button id="btnDisconnect" disabled>Disconnect</button>
 
     <pre id="log"></pre>
@@ -14,6 +15,7 @@
       const logEl = document.getElementById("log");
       const btnConnect = document.getElementById("btnConnect");
       const btnOpenMM = document.getElementById("btnOpenMM");
+      const btnBalance = document.getElementById("btnBalance");
       const btnDisconnect = document.getElementById("btnDisconnect");
 
       function log(...args) {
@@ -235,6 +237,17 @@
           }
         } catch (_) {}
       })();
+
+      // New Balance button functionality
+      btnBalance.onclick = async () => {
+        try {
+          const account = await getAccount();
+          await ensureSepoliaNetwork();
+          await showBalance(account);
+        } catch (e) {
+          log("balance error:", e?.message || e);
+        }
+      };
     </script>
   </body>
 </html>
