@@ -3,7 +3,6 @@
   <body>
     <button id="btnConnect">Connect</button>
     <button id="btnOpenMM" disabled>Open MetaMask</button>
-    <button id="btnBalance" disabled>Switch to Sepolia + Show Balance</button>
     <button id="btnDisconnect" disabled>Disconnect</button>
 
     <pre id="log"></pre>
@@ -15,7 +14,6 @@
       const logEl = document.getElementById("log");
       const btnConnect = document.getElementById("btnConnect");
       const btnOpenMM = document.getElementById("btnOpenMM");
-      const btnBalance = document.getElementById("btnBalance");
       const btnDisconnect = document.getElementById("btnDisconnect");
 
       function log(...args) {
@@ -25,11 +23,9 @@
       // ---- CONFIG ----
       const projectId = "2e4efadf229d4718933748e0fb680f17";
 
-      // Sepolia
-      const SEPOLIA_CHAIN_ID_DEC = 11155111;
-      const SEPOLIA_CHAIN_ID_HEX = "0xaa36a7";
+      // We'll target Sepolia, but we're not doing the demo call yet.
+      const SEPOLIA = 11155111;
       const SEPOLIA_RPC = "https://rpc.sepolia.org";
-      const SEPOLIA_EXPLORER = "https://sepolia.etherscan.io";
 
       // ---- STATE ----
       let provider = null;
@@ -52,8 +48,8 @@
             icons: ["https://metamask.io/images/favicon-32.png"]
           },
 
-          optionalChains: [SEPOLIA_CHAIN_ID_DEC],
-          rpcMap: { [SEPOLIA_CHAIN_ID_DEC]: SEPOLIA_RPC }
+          optionalChains: [SEPOLIA],
+          rpcMap: { [SEPOLIA]: SEPOLIA_RPC }
         });
 
         provider.on("display_uri", (uri) => {
@@ -65,19 +61,18 @@
         provider.on("connect", (info) => {
           log("connected:", JSON.stringify(info));
           btnDisconnect.disabled = false;
-          btnBalance.disabled = false; // enable after connect
         });
 
         provider.on("disconnect", () => {
           log("disconnected");
           btnOpenMM.disabled = true;
           btnDisconnect.disabled = true;
-          btnBalance.disabled = true;
           wcUri = null;
         });
 
         provider.on("accountsChanged", (accounts) => {
           log("accountsChanged:", JSON.stringify(accounts));
+          if (accounts && accounts[0]) log("account:", accounts[0]);
         });
 
         provider.on("chainChanged", (chainId) => {
@@ -87,100 +82,22 @@
         return provider;
       }
 
-      async function getAccount() {
+      async function showAccounts() {
         const accounts = await provider.request({ method: "eth_accounts" });
-        return accounts?.[0] || null;
+        if (accounts && accounts[0]) log("account:", accounts[0]);
+        else log("account: (none yet)");
       }
-
-      function formatEthFromWeiHex(hexWei) {
-        // Minimal formatting without deps: show up to 6 decimals
-        const wei = BigInt(hexWei);
-        const WEI_PER_ETH = 1000000000000000000n;
-
-        const whole = wei / WEI_PER_ETH;
-        const frac = wei % WEI_PER_ETH;
-
-        const frac6 = frac.toString().padStart(18, "0").slice(0, 6);
-        return `${whole.toString()}.${frac6}`;
-      }
-
-      async function switchToSepolia() {
-        try {
-          await provider.request({
-            method: "wallet_switchEthereumChain",
-            params: [{ chainId: SEPOLIA_CHAIN_ID_HEX }]
-          });
-          log("Switched to Sepolia.");
-          return true;
-        } catch (e) {
-          // If Sepolia isn't added in the wallet
-          const code = e?.code;
-          const msg = e?.message || String(e);
-
-          if (code === 4902 || msg.includes("4902")) {
-            log("Sepolia not found in wallet. Adding chain...");
-            await provider.request({
-              method: "wallet_addEthereumChain",
-              params: [{
-                chainId: SEPOLIA_CHAIN_ID_HEX,
-                chainName: "Sepolia",
-                nativeCurrency: { name: "SepoliaETH", symbol: "ETH", decimals: 18 },
-                rpcUrls: [SEPOLIA_RPC],
-                blockExplorerUrls: [SEPOLIA_EXPLORER]
-              }]
-            });
-
-            await provider.request({
-              method: "wallet_switchEthereumChain",
-              params: [{ chainId: SEPOLIA_CHAIN_ID_HEX }]
-            });
-
-            log("Added + switched to Sepolia.");
-            return true;
-          }
-
-          log("Switch error:", msg);
-          return false;
-        }
-      }
-
-      async function showSepoliaBalance() {
-        const acct = await getAccount();
-        if (!acct) {
-          log("account: (none yet) - connect first");
-          return;
-        }
-
-        const ok = await switchToSepolia();
-        if (!ok) {
-          log("Could not switch to Sepolia. Try switching manually in MetaMask, then press balance again.");
-          return;
-        }
-
-        const balHex = await provider.request({
-          method: "eth_getBalance",
-          params: [acct, "latest"]
-        });
-
-        log("account:", acct);
-        log("Sepolia balance:", formatEthFromWeiHex(balHex), "ETH");
-      }
-
-      // --- Buttons (kept same pattern as your working version) ---
 
       btnConnect.onclick = async () => {
         try {
           await ensureProvider();
-          log("Starting connection. After you tap 'Open MetaMask', approve, then return here.");
+          log("Starting connection. Tap 'Open MetaMask' -> approve -> return here.");
 
-          // Resolves after approval in MetaMask
+          // Triggers display_uri; resolves after wallet approval
           await provider.connect();
 
-          const acct = await getAccount();
-          log("account:", acct || "(none yet)");
-
+          await showAccounts();
           btnDisconnect.disabled = false;
-          btnBalance.disabled = false;
         } catch (e) {
           log("connect error:", e?.message || e);
         }
@@ -192,25 +109,16 @@
         const uri = encodeURIComponent(wcUri);
         const isAndroid = /Android/i.test(navigator.userAgent);
 
-        // Keep the behavior that worked for you:
-        // Android: scheme link
+        // Android: prefer scheme link (often preserves wc params better)
         const schemeLink = `metamask://wc?uri=${uri}`;
-        // Non-Android: universal link
+
+        // Non-Android: universal link is usually fine
         const universalLink = `https://metamask.app.link/wc?uri=${uri}`;
 
         const target = isAndroid ? schemeLink : universalLink;
 
         log("Opening MetaMask via:", target);
-        location.href = target;
-      };
-
-      btnBalance.onclick = async () => {
-        try {
-          if (!provider) await ensureProvider();
-          await showSepoliaBalance();
-        } catch (e) {
-          log("balance error:", e?.message || e);
-        }
+        location.href = target; // user-gesture navigation
       };
 
       btnDisconnect.onclick = async () => {
@@ -222,16 +130,11 @@
         }
       };
 
-      // Optional: restore session on reload (doesn't change your flow)
+      // Try to restore any existing session on reload
       (async () => {
         try {
           await ensureProvider();
-          const acct = await getAccount();
-          if (acct) {
-            log("restored account:", acct);
-            btnDisconnect.disabled = false;
-            btnBalance.disabled = false;
-          }
+          await showAccounts();
         } catch (_) {}
       })();
     </script>
