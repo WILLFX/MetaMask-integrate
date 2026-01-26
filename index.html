@@ -37,8 +37,10 @@
       let wcUri = null;
 
       function formatEthFromHexWei(hexWei) {
+        // hexWei like "0x..."
         const wei = BigInt(hexWei);
         const base = 1000000000000000000n;
+
         const whole = wei / base;
         const frac = wei % base;
 
@@ -63,6 +65,7 @@
             icons: ["https://metamask.io/images/favicon-32.png"]
           },
 
+          // We want Sepolia available once connected.
           optionalChains: [SEPOLIA],
           rpcMap: { [SEPOLIA]: SEPOLIA_RPC_PRIMARY }
         });
@@ -115,6 +118,7 @@
       }
 
       async function ensureSepoliaNetwork() {
+        // Check current chain
         const currentHex = await provider.request({ method: "eth_chainId" });
         log("current chainId:", currentHex);
 
@@ -123,6 +127,7 @@
           return;
         }
 
+        // Try switch first
         try {
           log("Requesting switch to Sepolia...");
           await provider.request({
@@ -137,6 +142,7 @@
 
           log("switch error:", msg);
 
+          // 4902 = chain not added (common MetaMask behavior)
           if (code === 4902) {
             log("Sepolia not added. Requesting add network...");
             await provider.request({
@@ -160,6 +166,7 @@
             return;
           }
 
+          // Not a "not added" error: user rejected or wallet limitation
           throw e;
         }
       }
@@ -167,19 +174,24 @@
       btnConnect.onclick = async () => {
         try {
           await ensureProvider();
+
           log("Starting connection. Tap 'Open MetaMask' -> approve -> return here.");
 
-          // Initiate connection and chain switch simultaneously
-          const connectPromise = provider.connect();
-          const switchPromise = ensureSepoliaNetwork();
-
-          // Wait for the connection and network switch to complete
-          await Promise.all([connectPromise, switchPromise]);
+          // Triggers display_uri; resolves after wallet approval
+          await provider.connect();
 
           const acct = await getAccount();
           log("account:", acct || "(none)");
 
-          // Show balance on successful connection and network switch
+          // Auto switch (and add if needed)
+          try {
+            await ensureSepoliaNetwork();
+          } catch (e) {
+            log("Sepolia switch/add failed:", e?.message || e);
+            log("If MetaMask showed a prompt, make sure you approved it.");
+          }
+
+          // Show balance (on whatever chain you ended up on, ideally Sepolia)
           await showBalance(acct);
 
           btnDisconnect.disabled = false;
@@ -194,7 +206,10 @@
         const uri = encodeURIComponent(wcUri);
         const isAndroid = /Android/i.test(navigator.userAgent);
 
+        // Android: scheme often preserves wc params better.
         const schemeLink = `metamask://wc?uri=${uri}`;
+
+        // Non-Android fallback
         const universalLink = `https://metamask.app.link/wc?uri=${uri}`;
 
         const target = isAndroid ? schemeLink : universalLink;
@@ -223,7 +238,7 @@
         } catch (_) {}
       })();
 
-      // Balance button functionality
+      // New Balance button functionality
       btnBalance.onclick = async () => {
         try {
           const account = await getAccount();
@@ -236,6 +251,7 @@
     </script>
   </body>
 </html>
+
 
 
 
