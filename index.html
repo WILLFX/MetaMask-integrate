@@ -168,7 +168,7 @@
         try {
           await ensureProvider();
 
-          log("Starting connection. Tap 'Open MetaMask' -> approve -> return here.");
+          log("Starting connection. Tap 'Open MetaMask' -> approve -> stay in MetaMask.");
 
           // Triggers display_uri; resolves after wallet approval
           await provider.connect();
@@ -176,7 +176,7 @@
           const acct = await getAccount();
           log("account:", acct || "(none)");
 
-          // Request chain switch immediately once connected
+          // Directly stay in MetaMask for chain switching
           try {
             await ensureSepoliaNetwork();
           } catch (e) {
@@ -184,7 +184,7 @@
             log("If MetaMask showed a prompt, make sure you approved it.");
           }
 
-          // Show balance after switch
+          // Show balance (on whatever chain you ended up on, ideally Sepolia)
           await showBalance(acct);
 
           btnDisconnect.disabled = false;
@@ -244,6 +244,7 @@
     </script>
   </body>
 </html>
+
 
 
 
