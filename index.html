@@ -23,7 +23,7 @@
       }
 
       // ---- CONFIG ----
-      const projectId = "YOUR_PROJECT_ID_HERE"; // Replace with your WalletConnect project ID
+      const projectId = "19acc37cc9d91b4b39b0cca952297654"; // Replace with your WalletConnect project ID
       const SEPOLIA = 11155111;
       const SEPOLIA_HEX = "0xaa36a7"; // 11155111
       const SEPOLIA_RPC_PRIMARY = "https://rpc.sepolia.org";
@@ -168,7 +168,7 @@
         try {
           await ensureProvider();
 
-          log("Starting connection. Tap 'Open MetaMask' -> approve -> return here.");
+          log("Starting connection. Tap 'Open MetaMask' -> approve -> stay in MetaMask.");
 
           // Triggers display_uri; resolves after wallet approval
           await provider.connect();
@@ -176,7 +176,7 @@
           const acct = await getAccount();
           log("account:", acct || "(none)");
 
-          // Directly stay in MetaMask for chain switching
+          // Immediately request chain switch to Sepolia
           try {
             await ensureSepoliaNetwork();
           } catch (e) {
@@ -244,6 +244,7 @@
     </script>
   </body>
 </html>
+
 
 
 
