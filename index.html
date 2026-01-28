@@ -176,13 +176,8 @@
           const acct = await getAccount();
           log("account:", acct || "(none)");
 
-          // Directly stay in MetaMask for chain switching
-          try {
-            await ensureSepoliaNetwork();
-          } catch (e) {
-            log("Sepolia switch/add failed:", e?.message || e);
-            log("If MetaMask showed a prompt, make sure you approved it.");
-          }
+          // Directly initiate chain switch in MetaMask, no return to dapp
+          await ensureSepoliaNetwork();
 
           // Show balance (on whatever chain you ended up on, ideally Sepolia)
           await showBalance(acct);
@@ -244,6 +239,7 @@
     </script>
   </body>
 </html>
+
 
 
 
