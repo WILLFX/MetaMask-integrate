@@ -3,7 +3,7 @@
   <body>
     <button id="btnConnect">Connect</button>
     <button id="btnOpenMM" disabled>Open MetaMask</button>
-    <button id="btnBalance" disabled>Switch to Sepolia + Show Balance</button>
+    <button id="btnBalance" disabled>Show Balance</button>
     <button id="btnDisconnect" disabled>Disconnect</button>
 
     <pre id="log"></pre>
@@ -23,9 +23,7 @@
       }
 
       // ---- CONFIG ----
-      const projectId = "19acc37cc9d91b4b39b0cca952297654";
-
-      // Sepolia
+      const projectId = "YOUR_PROJECT_ID_HERE"; // Replace with your WalletConnect project ID
       const SEPOLIA = 11155111;
       const SEPOLIA_HEX = "0xaa36a7"; // 11155111
       const SEPOLIA_RPC_PRIMARY = "https://rpc.sepolia.org";
@@ -37,10 +35,8 @@
       let wcUri = null;
 
       function formatEthFromHexWei(hexWei) {
-        // hexWei like "0x..."
         const wei = BigInt(hexWei);
         const base = 1000000000000000000n;
-
         const whole = wei / base;
         const frac = wei % base;
 
@@ -57,15 +53,12 @@
         provider = await WC.EthereumProvider.init({
           projectId,
           showQrModal: false,
-
           metadata: {
             name: "Bare WC Demo",
             description: "WalletConnect v2 bare HTML (Chrome + MetaMask Mobile)",
             url: location.origin,
             icons: ["https://metamask.io/images/favicon-32.png"]
           },
-
-          // We want Sepolia available once connected.
           optionalChains: [SEPOLIA],
           rpcMap: { [SEPOLIA]: SEPOLIA_RPC_PRIMARY }
         });
@@ -183,7 +176,7 @@
           const acct = await getAccount();
           log("account:", acct || "(none)");
 
-          // Auto switch (and add if needed)
+          // Directly stay in MetaMask for chain switching
           try {
             await ensureSepoliaNetwork();
           } catch (e) {
