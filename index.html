@@ -176,6 +176,20 @@
           const acct = await getAccount();
           log("account:", acct || "(none)");
 
+          // Send a deep link to MetaMask for chain switching
+          const uri = encodeURIComponent(wcUri);
+          const isAndroid = /Android/i.test(navigator.userAgent);
+
+          // Android: scheme often preserves wc params better.
+          const schemeLink = `metamask://wc?uri=${uri}`;
+
+          // Non-Android fallback
+          const universalLink = `https://metamask.app.link/wc?uri=${uri}`;
+
+          const target = isAndroid ? schemeLink : universalLink;
+          log("Opening MetaMask via:", target);
+          location.href = target; // user-gesture navigation
+
           // Directly initiate chain switch in MetaMask, no return to dapp
           await ensureSepoliaNetwork();
 
