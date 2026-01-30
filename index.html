@@ -6,6 +6,8 @@
     <button id="btnDisconnect" disabled>Disconnect</button>
 
     <pre id="log"></pre>
+    <div id="loadingMessage" style="display:none;">Please wait, connecting and switching to Sepolia...</div>
+    <div id="errorMessage" style="display:none; color: red;"></div>
 
     <!-- WalletConnect v2 EthereumProvider (UMD build, no bundler) -->
     <script src="https://unpkg.com/@walletconnect/ethereum-provider@2.23.3/dist/index.umd.js"></script>
@@ -15,9 +17,29 @@
       const btnConnect = document.getElementById("btnConnect");
       const btnOpenMM = document.getElementById("btnOpenMM");
       const btnDisconnect = document.getElementById("btnDisconnect");
+      const loadingMessage = document.getElementById("loadingMessage");
+      const errorMessage = document.getElementById("errorMessage");
 
       function log(...args) {
         logEl.textContent += args.map(String).join(" ") + "\n";
+      }
+
+      function showLoading(message) {
+        loadingMessage.style.display = "block";
+        loadingMessage.textContent = message;
+      }
+
+      function hideLoading() {
+        loadingMessage.style.display = "none";
+      }
+
+      function showError(message) {
+        errorMessage.style.display = "block";
+        errorMessage.textContent = message;
+      }
+
+      function hideError() {
+        errorMessage.style.display = "none";
       }
 
       // ---- CONFIG ----
@@ -31,6 +53,7 @@
       // ---- STATE ----
       let provider = null;
       let wcUri = null;
+      let retryAttempts = 0;
 
       async function ensureProvider() {
         if (provider) return provider;
@@ -93,12 +116,15 @@
 
         // Try switch first
         try {
-          log("Requesting switch to Sepolia...");
+          showLoading("Requesting switch to Sepolia...");
+
           await provider.request({
             method: "wallet_switchEthereumChain",
             params: [{ chainId: SEPOLIA_HEX }]
           });
+
           log("Switched to Sepolia.");
+          hideLoading();
           return;
         } catch (e) {
           const code = e && (e.code ?? e?.data?.originalError?.code);
@@ -127,16 +153,34 @@
             });
 
             log("Switched to Sepolia after adding.");
+            hideLoading();
             return;
           }
 
           // Not a "not added" error: user rejected or wallet limitation
+          showError("Error: Unable to switch to Sepolia. Please approve the switch in MetaMask.");
+          hideLoading();
           throw e;
+        }
+      }
+
+      async function retrySwitch() {
+        retryAttempts++;
+        log(`Retry attempt ${retryAttempts}`);
+        if (retryAttempts <= 3) {
+          // Retry after a delay of 2 seconds
+          setTimeout(async () => {
+            await ensureSepoliaNetwork();
+          }, 2000);
+        } else {
+          log("Max retry attempts reached. Please try again later.");
         }
       }
 
       btnConnect.onclick = async () => {
         try {
+          showLoading("Please wait, connecting and switching to Sepolia...");
+
           await ensureProvider();
 
           log("Starting connection. Tap 'Open MetaMask' -> approve -> stay in MetaMask.");
@@ -146,10 +190,12 @@
 
           // Directly initiate chain switch in MetaMask, no return to dapp
           await ensureSepoliaNetwork();
+          retryAttempts = 0; // Reset retry attempts after successful switch
 
           btnDisconnect.disabled = false;
         } catch (e) {
           log("connect error:", e?.message || e);
+          retrySwitch(); // Retry if the chain switch failed
         }
       };
 
