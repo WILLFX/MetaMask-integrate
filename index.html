@@ -3,7 +3,6 @@
   <body>
     <button id="btnConnect">Connect</button>
     <button id="btnOpenMM" disabled>Open MetaMask</button>
-    <button id="btnBalance" disabled>Show Balance</button>
     <button id="btnDisconnect" disabled>Disconnect</button>
 
     <pre id="log"></pre>
@@ -15,7 +14,6 @@
       const logEl = document.getElementById("log");
       const btnConnect = document.getElementById("btnConnect");
       const btnOpenMM = document.getElementById("btnOpenMM");
-      const btnBalance = document.getElementById("btnBalance");
       const btnDisconnect = document.getElementById("btnDisconnect");
 
       function log(...args) {
@@ -33,16 +31,6 @@
       // ---- STATE ----
       let provider = null;
       let wcUri = null;
-
-      function formatEthFromHexWei(hexWei) {
-        const wei = BigInt(hexWei);
-        const base = 1000000000000000000n;
-        const whole = wei / base;
-        const frac = wei % base;
-
-        let fracStr = frac.toString().padStart(18, "0").replace(/0+$/, "");
-        return fracStr ? `${whole.toString()}.${fracStr}` : whole.toString();
-      }
 
       async function ensureProvider() {
         if (provider) return provider;
@@ -91,23 +79,6 @@
         });
 
         return provider;
-      }
-
-      async function getAccount() {
-        const accounts = await provider.request({ method: "eth_accounts" });
-        return accounts && accounts[0] ? accounts[0] : null;
-      }
-
-      async function showBalance(account) {
-        if (!account) {
-          log("balance: (no account)");
-          return;
-        }
-        const balHex = await provider.request({
-          method: "eth_getBalance",
-          params: [account, "latest"]
-        });
-        log("Sepolia balance (ETH):", formatEthFromHexWei(balHex));
       }
 
       async function ensureSepoliaNetwork() {
@@ -173,28 +144,8 @@
           // Triggers display_uri; resolves after wallet approval
           await provider.connect();
 
-          const acct = await getAccount();
-          log("account:", acct || "(none)");
-
-          // Send a deep link to MetaMask for chain switching
-          const uri = encodeURIComponent(wcUri);
-          const isAndroid = /Android/i.test(navigator.userAgent);
-
-          // Android: scheme often preserves wc params better.
-          const schemeLink = `metamask://wc?uri=${uri}`;
-
-          // Non-Android fallback
-          const universalLink = `https://metamask.app.link/wc?uri=${uri}`;
-
-          const target = isAndroid ? schemeLink : universalLink;
-          log("Opening MetaMask via:", target);
-          location.href = target; // user-gesture navigation
-
           // Directly initiate chain switch in MetaMask, no return to dapp
           await ensureSepoliaNetwork();
-
-          // Show balance (on whatever chain you ended up on, ideally Sepolia)
-          await showBalance(acct);
 
           btnDisconnect.disabled = false;
         } catch (e) {
@@ -228,31 +179,10 @@
         }
       };
 
-      // Try to restore an existing session on reload
-      (async () => {
-        try {
-          await ensureProvider();
-          const acct = await getAccount();
-          if (acct) {
-            log("restored account:", acct);
-            await showBalance(acct);
-          }
-        } catch (_) {}
-      })();
-
-      // New Balance button functionality
-      btnBalance.onclick = async () => {
-        try {
-          const account = await getAccount();
-          await ensureSepoliaNetwork();
-          await showBalance(account);
-        } catch (e) {
-          log("balance error:", e?.message || e);
-        }
-      };
     </script>
   </body>
 </html>
+
 
 
 
