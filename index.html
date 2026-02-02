@@ -3,187 +3,77 @@
   <head>
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <style>
-      body {
-        font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
-        padding: 12px;
-      }
-
-      /* Bigger touch buttons */
+      /* Bigger buttons, keep everything else bare */
       button {
         font-size: 18px;
         padding: 14px 18px;
-        margin: 8px 10px 8px 0;
-        border-radius: 12px;
-        border: 2px solid #222;
-        background: #f2f2f2;
-      }
-      button:disabled {
-        opacity: 0.35;
-        filter: grayscale(1);
-      }
-
-      /* Status line */
-      #statusLine {
-        margin: 10px 0 10px 0;
-        font-size: 14px;
-        padding: 10px;
+        margin: 6px 10px 6px 0;
         border-radius: 10px;
-        background: #f6f6f6;
-        border: 1px solid #ddd;
       }
-
-      /* Logs: smaller + scroll */
       #log {
         white-space: pre-wrap;
-        word-break: break-word;
-        font-size: 12px;
-        line-height: 1.25;
-        padding: 10px;
-        background: #f5f5f5;
-        border-radius: 10px;
-        border: 1px solid #ddd;
-        max-height: 220px;
-        overflow: auto;
-      }
-
-      /* Top banner popup */
-      #topBanner {
-        position: fixed;
-        top: 0;
-        left: 0;
-        right: 0;
-        z-index: 9999;
-        display: none;
-        padding: 12px;
-        background: #111;
-        color: #fff;
-        box-shadow: 0 6px 18px rgba(0,0,0,0.25);
-      }
-      #topBannerRow {
-        display: flex;
-        align-items: center;
-        gap: 10px;
-        flex-wrap: wrap;
-      }
-      #topBannerText {
-        flex: 1;
-        min-width: 220px;
-        font-size: 14px;
-        line-height: 1.25;
-      }
-      .bannerBtn {
-        font-size: 14px;
-        padding: 10px 12px;
-        border-radius: 10px;
-        border: 1px solid #fff;
-        background: transparent;
-        color: #fff;
-        margin: 0;
-      }
-      .bannerBtnPrimary {
-        background: #fff;
-        color: #111;
-        border: 1px solid #fff;
-      }
-
-      /* Add top padding so banner doesn't cover UI */
-      .pagePad {
-        padding-top: 64px;
       }
     </style>
   </head>
 
-  <body class="pagePad">
-    <!-- TOP POPUP BANNER -->
-    <div id="topBanner">
-      <div id="topBannerRow">
-        <div id="topBannerText">
-          Waiting for MetaMask approval to switch/add Sepolia.
-          If you don’t see a prompt, tap “Open MetaMask”.
-        </div>
-        <button id="btnBannerOpenMM" class="bannerBtn bannerBtnPrimary">Open MetaMask</button>
-        <button id="btnBannerDismiss" class="bannerBtn">Dismiss</button>
-      </div>
-    </div>
-
+  <body>
     <button id="btnConnect">Connect</button>
     <button id="btnOpenMM" disabled>Open MetaMask</button>
     <button id="btnDisconnect" disabled>Disconnect</button>
 
-    <div id="statusLine">Status: idle</div>
-
     <pre id="log"></pre>
+    <div id="loadingMessage" style="display:none;">Please wait, connecting and switching to Sepolia...</div>
+    <div id="errorMessage" style="display:none; color: red;"></div>
+    <div id="retryMessage" style="display:none; color: orange;">Retrying to switch networks...</div>
 
     <!-- WalletConnect v2 EthereumProvider (UMD build, no bundler) -->
     <script src="https://unpkg.com/@walletconnect/ethereum-provider@2.23.3/dist/index.umd.js"></script>
 
     <script>
       const logEl = document.getElementById("log");
-      const statusLine = document.getElementById("statusLine");
-
       const btnConnect = document.getElementById("btnConnect");
       const btnOpenMM = document.getElementById("btnOpenMM");
       const btnDisconnect = document.getElementById("btnDisconnect");
+      const loadingMessage = document.getElementById("loadingMessage");
+      const errorMessage = document.getElementById("errorMessage");
+      const retryMessage = document.getElementById("retryMessage");
 
-      const topBanner = document.getElementById("topBanner");
-      const btnBannerOpenMM = document.getElementById("btnBannerOpenMM");
-      const btnBannerDismiss = document.getElementById("btnBannerDismiss");
-
-      // Keep logs readable: only keep last N lines
-      const MAX_LOG_LINES = 80;
-      let logLines = [];
-
-      function setStatus(text) {
-        statusLine.textContent = "Status: " + text;
-      }
+      let retryAttempts = 0;
 
       function log(...args) {
-        const line = args.map(String).join(" ");
-        logLines.push(line);
-        if (logLines.length > MAX_LOG_LINES) logLines = logLines.slice(-MAX_LOG_LINES);
-        logEl.textContent = logLines.join("\n") + "\n";
-        logEl.scrollTop = logEl.scrollHeight;
+        logEl.textContent += args.map(String).join(" ") + "\n";
       }
 
-      function showTopBanner(message) {
-        if (message) document.getElementById("topBannerText").textContent = message;
-        topBanner.style.display = "block";
-      }
-      function hideTopBanner() {
-        topBanner.style.display = "none";
+      function showLoading(message) {
+        loadingMessage.style.display = "block";
+        loadingMessage.textContent = message;
       }
 
-      // Opens MetaMask app directly (helps user see pending prompts)
-      function openMetaMaskApp() {
-        const isAndroid = /Android/i.test(navigator.userAgent);
-        const scheme = "metamask://";
-        const universal = "https://metamask.app.link/";
-
-        // Try scheme first, then fallback
-        location.href = scheme;
-        if (!isAndroid) {
-          location.href = universal;
-          return;
-        }
-        setTimeout(() => {
-          location.href = universal;
-        }, 350);
+      function hideLoading() {
+        loadingMessage.style.display = "none";
       }
 
-      btnBannerOpenMM.onclick = () => {
-        log("Opening MetaMask app (banner)...");
-        openMetaMaskApp();
-      };
-      btnBannerDismiss.onclick = () => {
-        hideTopBanner();
-      };
+      function showError(message) {
+        errorMessage.style.display = "block";
+        errorMessage.textContent = message;
+      }
+
+      function hideError() {
+        errorMessage.style.display = "none";
+      }
+
+      function showRetryMessage() {
+        retryMessage.style.display = "block";
+      }
+
+      function hideRetryMessage() {
+        retryMessage.style.display = "none";
+      }
 
       // ---- CONFIG ----
-      const projectId = "19acc37cc9d91b4b39b0cca952297654"; // <-- put your real project id
-
-      // Sepolia
+      const projectId = "19acc37cc9d91b4b39b0cca952297654"; // Replace with your WalletConnect project ID
       const SEPOLIA = 11155111;
-      const SEPOLIA_HEX = "0xaa36a7";
+      const SEPOLIA_HEX = "0xaa36a7"; // 11155111
       const SEPOLIA_RPC_PRIMARY = "https://rpc.sepolia.org";
       const SEPOLIA_RPC_SECONDARY = "https://rpc2.sepolia.org";
       const SEPOLIA_EXPLORER = "https://sepolia.etherscan.io";
@@ -191,6 +81,9 @@
       // ---- STATE ----
       let provider = null;
       let wcUri = null;
+
+      // Popup should appear only once per connection attempt, even if retries happen
+      let chainSwitchConfirmed = false;
 
       async function ensureProvider() {
         if (provider) return provider;
@@ -213,18 +106,13 @@
 
         provider.on("display_uri", (uri) => {
           wcUri = uri;
-          setStatus("walletconnect uri ready (tap Open MetaMask)");
           log("display_uri ready");
           btnOpenMM.disabled = false;
-
-          // Small hint banner (optional): show once when URI is ready
-          showTopBanner("Tap “Open MetaMask” to approve the connection.");
         });
 
         provider.on("connect", (info) => {
           log("connected:", JSON.stringify(info));
           btnDisconnect.disabled = false;
-          setStatus("connected (next: switch to Sepolia)");
         });
 
         provider.on("disconnect", () => {
@@ -232,12 +120,13 @@
           btnOpenMM.disabled = true;
           btnDisconnect.disabled = true;
           wcUri = null;
-          setStatus("disconnected");
-          hideTopBanner();
+
+          chainSwitchConfirmed = false; // reset for next session
         });
 
         provider.on("accountsChanged", (accounts) => {
           log("accountsChanged:", JSON.stringify(accounts));
+          if (accounts && accounts[0]) log("account:", accounts[0]);
         });
 
         provider.on("chainChanged", (chainId) => {
@@ -248,40 +137,48 @@
       }
 
       async function ensureSepoliaNetwork() {
+        // Check current chain
         const currentHex = await provider.request({ method: "eth_chainId" });
         log("current chainId:", currentHex);
 
         if (String(currentHex).toLowerCase() === SEPOLIA_HEX) {
           log("Already on Sepolia.");
-          setStatus("on Sepolia ✅");
-          hideTopBanner();
           return;
         }
 
-        // IMPORTANT: show banner immediately when we start switching
-        setStatus("requesting Sepolia switch (approve in MetaMask)");
-        showTopBanner("Approve Sepolia switch/add in MetaMask. If you don’t see a prompt, tap “Open MetaMask”.");
+        // POPUP: only when we actually need to switch/add Sepolia
+        if (!chainSwitchConfirmed) {
+          const ok = confirm(
+            "Next step: MetaMask will ask to add/switch to Sepolia.\n\nTap OK, then approve in MetaMask.\nTap Cancel to stop."
+          );
+          if (!ok) {
+            log("User cancelled chain switching.");
+            throw new Error("USER_CANCELLED_CHAIN_SWITCH");
+          }
+          chainSwitchConfirmed = true;
+        }
 
+        // Try switch first
         try {
-          log("Requesting switch to Sepolia...");
+          showLoading("Requesting switch to Sepolia...");
+
           await provider.request({
             method: "wallet_switchEthereumChain",
             params: [{ chainId: SEPOLIA_HEX }]
           });
 
           log("Switched to Sepolia.");
-          setStatus("on Sepolia ✅");
-          hideTopBanner();
+          hideLoading();
           return;
         } catch (e) {
           const code = e && (e.code ?? e?.data?.originalError?.code);
           const msg = e && (e.message || String(e));
+
           log("switch error:", msg);
 
+          // 4902 = chain not added (common MetaMask behavior)
           if (code === 4902) {
             log("Sepolia not added. Requesting add network...");
-            showTopBanner("MetaMask needs to add Sepolia first. Approve the ‘Add network’ prompt in MetaMask.");
-
             await provider.request({
               method: "wallet_addEthereumChain",
               params: [{
@@ -294,51 +191,78 @@
             });
 
             log("Network add requested. Now switching to Sepolia...");
-            showTopBanner("Now approve the Sepolia ‘Switch network’ prompt in MetaMask.");
-
             await provider.request({
               method: "wallet_switchEthereumChain",
               params: [{ chainId: SEPOLIA_HEX }]
             });
 
             log("Switched to Sepolia after adding.");
-            setStatus("on Sepolia ✅");
-            hideTopBanner();
+            hideLoading();
             return;
           }
 
-          // If user rejected, keep banner but make message clearer
-          if (code === 4001) {
-            setStatus("switch rejected (approve in MetaMask)");
-            showTopBanner("You rejected the prompt. Tap “Open MetaMask” and approve Sepolia switch/add.");
-          } else {
-            setStatus("switch pending or failed (check MetaMask)");
-            showTopBanner("If there’s a pending prompt in MetaMask, approve it. Tap “Open MetaMask” to check.");
-          }
-
+          // Not a "not added" error: user rejected or wallet limitation
+          showError("Error: Unable to switch to Sepolia. Please approve the switch in MetaMask.");
+          hideLoading();
           throw e;
+        }
+      }
+
+      async function retrySwitch() {
+        retryAttempts++;
+        log(`Retry attempt ${retryAttempts} of 3`);
+        if (retryAttempts <= 3) {
+          showRetryMessage();
+          setTimeout(async () => {
+            try {
+              await ensureSepoliaNetwork();
+            } catch (e) {
+              // If user cancelled, stop retrying
+              if ((e?.message || String(e)) === "USER_CANCELLED_CHAIN_SWITCH") {
+                hideRetryMessage();
+                hideLoading();
+                return;
+              }
+              throw e;
+            }
+          }, 2000); // Retry after 2 seconds
+        } else {
+          log("Max retry attempts reached. Please try again later.");
+          showError("Failed to switch to Sepolia after multiple attempts.");
+          hideRetryMessage();
         }
       }
 
       btnConnect.onclick = async () => {
         try {
-          hideTopBanner();
-          setStatus("starting connection...");
-          log("Starting connection. Tap 'Open MetaMask' -> approve -> return here.");
+          showLoading("Please wait, connecting and switching to Sepolia...");
 
           await ensureProvider();
+
+          log("Starting connection. Tap 'Open MetaMask' -> approve -> stay in MetaMask.");
 
           // Triggers display_uri; resolves after wallet approval
           await provider.connect();
 
-          // After connect, request switch (banner shows immediately here)
+          // Reset confirmation for this run (so popup shows when switching is attempted)
+          chainSwitchConfirmed = false;
+
+          // Attempt chain switch
           await ensureSepoliaNetwork();
 
+          retryAttempts = 0; // Reset retry attempts after successful switch
           btnDisconnect.disabled = false;
         } catch (e) {
-          log("connect/switch error:", e?.message || e);
-          // Keep banner visible so user has a CTA to open MetaMask
-          showTopBanner("If MetaMask didn’t show a prompt, tap “Open MetaMask” to approve.");
+          const msg = e?.message || String(e);
+          log("connect error:", msg);
+
+          if (msg === "USER_CANCELLED_CHAIN_SWITCH") {
+            hideLoading();
+            hideRetryMessage();
+            return;
+          }
+
+          retrySwitch(); // Retry if the chain switch failed
         }
       };
 
@@ -348,13 +272,15 @@
         const uri = encodeURIComponent(wcUri);
         const isAndroid = /Android/i.test(navigator.userAgent);
 
+        // Android: scheme often preserves wc params better.
         const schemeLink = `metamask://wc?uri=${uri}`;
+
+        // Non-Android fallback
         const universalLink = `https://metamask.app.link/wc?uri=${uri}`;
 
         const target = isAndroid ? schemeLink : universalLink;
-        setStatus("opening MetaMask for connection approval...");
         log("Opening MetaMask via:", target);
-        location.href = target;
+        location.href = target; // user-gesture navigation
       };
 
       btnDisconnect.onclick = async () => {
@@ -365,12 +291,10 @@
           log("disconnect error:", e?.message || e);
         }
       };
-
-      // Also allow banner button to open MetaMask app anytime (for switch prompts)
-      // (already wired via btnBannerOpenMM)
     </script>
   </body>
 </html>
+
 
 
 
