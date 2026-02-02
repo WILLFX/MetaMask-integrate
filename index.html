@@ -1,22 +1,22 @@
 <!doctype html>
 <html>
-  <head>
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <body>
+    <!-- NEW: Simple styles for bigger buttons -->
     <style>
-      /* Bigger buttons, keep everything else bare */
+      body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; padding: 16px; }
       button {
         font-size: 18px;
         padding: 14px 18px;
-        margin: 6px 10px 6px 0;
+        margin: 8px 10px 8px 0;
         border-radius: 10px;
+        border: 1px solid #bbb;
+        background: #f7f7f7;
       }
-      #log {
-        white-space: pre-wrap;
-      }
+      button:disabled { opacity: 0.5; }
+      #log { margin-top: 14px; }
+      #loadingMessage, #errorMessage, #retryMessage { margin-top: 10px; }
     </style>
-  </head>
 
-  <body>
     <button id="btnConnect">Connect</button>
     <button id="btnOpenMM" disabled>Open MetaMask</button>
     <button id="btnDisconnect" disabled>Disconnect</button>
@@ -82,8 +82,40 @@
       let provider = null;
       let wcUri = null;
 
-      // Popup should appear only once per connection attempt, even if retries happen
-      let chainSwitchConfirmed = false;
+      // NEW: Notification control so we only ping once per connect attempt
+      let switchNotifySent = false;
+
+      // NEW: Chrome-style notification helpers (Web Notifications)
+      async function ensureNotificationPermissionIfNeeded() {
+        // Only ask once, and only on a user gesture (Connect click)
+        if (!("Notification" in window)) return false;
+        if (Notification.permission === "granted") return true;
+        if (Notification.permission === "denied") return false;
+
+        try {
+          const p = await Notification.requestPermission();
+          return p === "granted";
+        } catch (_) {
+          return false;
+        }
+      }
+
+      function notifySwitchNeedsApprovalOnce() {
+        if (switchNotifySent) return;
+        switchNotifySent = true;
+
+        if (!("Notification" in window)) return;
+        if (Notification.permission !== "granted") return;
+
+        try {
+          new Notification("MetaMask approval needed", {
+            body: "Approve the Sepolia network switch/add in MetaMask.",
+            icon: "https://metamask.io/images/favicon-32.png"
+          });
+        } catch (_) {
+          // Some Android builds can throw if notifications aren’t available; ignore silently.
+        }
+      }
 
       async function ensureProvider() {
         if (provider) return provider;
@@ -120,8 +152,6 @@
           btnOpenMM.disabled = true;
           btnDisconnect.disabled = true;
           wcUri = null;
-
-          chainSwitchConfirmed = false; // reset for next session
         });
 
         provider.on("accountsChanged", (accounts) => {
@@ -146,20 +176,11 @@
           return;
         }
 
-        // POPUP: only when we actually need to switch/add Sepolia
-        if (!chainSwitchConfirmed) {
-          const ok = confirm(
-            "Next step: MetaMask will ask to add/switch to Sepolia.\n\nTap OK, then approve in MetaMask.\nTap Cancel to stop."
-          );
-          if (!ok) {
-            log("User cancelled chain switching.");
-            throw new Error("USER_CANCELLED_CHAIN_SWITCH");
-          }
-          chainSwitchConfirmed = true;
-        }
-
         // Try switch first
         try {
+          // NEW: notify user that MetaMask approval is needed (only once)
+          notifySwitchNeedsApprovalOnce();
+
           showLoading("Requesting switch to Sepolia...");
 
           await provider.request({
@@ -178,6 +199,9 @@
 
           // 4902 = chain not added (common MetaMask behavior)
           if (code === 4902) {
+            // NEW: still part of switching flow, keep the same single notification
+            notifySwitchNeedsApprovalOnce();
+
             log("Sepolia not added. Requesting add network...");
             await provider.request({
               method: "wallet_addEthereumChain",
@@ -202,7 +226,7 @@
           }
 
           // Not a "not added" error: user rejected or wallet limitation
-          showError("Error: Unable to switch to Sepolia. Please approve the switch in MetaMask.");
+          showError("Error: Unable to switch to Sepolia. Please approve the switch/add in MetaMask.");
           hideLoading();
           throw e;
         }
@@ -212,29 +236,26 @@
         retryAttempts++;
         log(`Retry attempt ${retryAttempts} of 3`);
         if (retryAttempts <= 3) {
-          showRetryMessage();
+          showRetryMessage(); // Show retry message
           setTimeout(async () => {
-            try {
-              await ensureSepoliaNetwork();
-            } catch (e) {
-              // If user cancelled, stop retrying
-              if ((e?.message || String(e)) === "USER_CANCELLED_CHAIN_SWITCH") {
-                hideRetryMessage();
-                hideLoading();
-                return;
-              }
-              throw e;
-            }
+            await ensureSepoliaNetwork();
           }, 2000); // Retry after 2 seconds
         } else {
           log("Max retry attempts reached. Please try again later.");
           showError("Failed to switch to Sepolia after multiple attempts.");
-          hideRetryMessage();
+          hideRetryMessage(); // Hide retry message
         }
       }
 
       btnConnect.onclick = async () => {
         try {
+          // NEW: reset per-attempt state
+          switchNotifySent = false;
+
+          // NEW: request notification permission (only on click, and only once)
+          // If user denies, we just won't show the popup later.
+          await ensureNotificationPermissionIfNeeded();
+
           showLoading("Please wait, connecting and switching to Sepolia...");
 
           await ensureProvider();
@@ -244,24 +265,13 @@
           // Triggers display_uri; resolves after wallet approval
           await provider.connect();
 
-          // Reset confirmation for this run (so popup shows when switching is attempted)
-          chainSwitchConfirmed = false;
-
-          // Attempt chain switch
+          // After returning to dapp, we start the switch flow; notification will fire here.
           await ensureSepoliaNetwork();
-
           retryAttempts = 0; // Reset retry attempts after successful switch
+
           btnDisconnect.disabled = false;
         } catch (e) {
-          const msg = e?.message || String(e);
-          log("connect error:", msg);
-
-          if (msg === "USER_CANCELLED_CHAIN_SWITCH") {
-            hideLoading();
-            hideRetryMessage();
-            return;
-          }
-
+          log("connect error:", e?.message || e);
           retrySwitch(); // Retry if the chain switch failed
         }
       };
@@ -291,9 +301,11 @@
           log("disconnect error:", e?.message || e);
         }
       };
+
     </script>
   </body>
 </html>
+
 
 
 
