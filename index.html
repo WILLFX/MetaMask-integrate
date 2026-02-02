@@ -1,44 +1,91 @@
 <!doctype html>
 <html>
+  <head>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style>
+      /* Bigger, touch-friendly buttons (still bare) */
+      button {
+        font-size: 18px;
+        padding: 14px 18px;
+        margin: 8px 8px 8px 0;
+        border-radius: 10px;
+      }
+      pre {
+        white-space: pre-wrap;
+        word-break: break-word;
+        font-size: 14px;
+        padding: 10px;
+        background: #f5f5f5;
+        border-radius: 10px;
+      }
+
+      /* Popup modal (bare overlay) */
+      #mmModalOverlay {
+        position: fixed;
+        inset: 0;
+        background: rgba(0,0,0,0.55);
+        display: none;
+        align-items: center;
+        justify-content: center;
+        z-index: 9999;
+      }
+      #mmModal {
+        width: min(520px, 92vw);
+        background: white;
+        border-radius: 14px;
+        padding: 16px;
+        font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+      }
+      #mmModalTitle {
+        font-size: 16px;
+        font-weight: 700;
+        margin: 0 0 8px 0;
+      }
+      #mmModalText {
+        font-size: 14px;
+        margin: 0 0 12px 0;
+        line-height: 1.35;
+      }
+      #mmModalActions {
+        display: flex;
+        gap: 10px;
+        flex-wrap: wrap;
+      }
+      #mmModalActions button {
+        margin: 0;
+      }
+    </style>
+  </head>
+
   <body>
     <button id="btnConnect">Connect</button>
     <button id="btnOpenMM" disabled>Open MetaMask</button>
     <button id="btnDisconnect" disabled>Disconnect</button>
 
     <pre id="log"></pre>
-
     <div id="loadingMessage" style="display:none;">Please wait, connecting and switching to Sepolia...</div>
     <div id="errorMessage" style="display:none; color: red;"></div>
     <div id="retryMessage" style="display:none; color: orange;">Retrying to switch networks...</div>
 
-    <!-- NEW: simple notification -->
-    <div id="mmNotice" style="display:none; margin-top:10px; padding:10px; border:1px solid #ccc;">
-      If you don’t see the Sepolia prompt yet, tap <b>Open MetaMask</b> to approve the network switch/add.
+    <!-- Popup for "go to MetaMask to approve switch" -->
+    <div id="mmModalOverlay">
+      <div id="mmModal">
+        <p id="mmModalTitle">Approve Sepolia switch in MetaMask</p>
+        <p id="mmModalText">
+          If MetaMask didn’t show the Sepolia prompt automatically, tap the button below.
+          Approve the network add/switch in MetaMask, then return here.
+        </p>
+        <div id="mmModalActions">
+          <button id="btnModalOpenMM">Open MetaMask (approve)</button>
+          <button id="btnModalClose">I’ll do it manually</button>
+        </div>
+      </div>
     </div>
 
     <!-- WalletConnect v2 EthereumProvider (UMD build, no bundler) -->
     <script src="https://unpkg.com/@walletconnect/ethereum-provider@2.23.3/dist/index.umd.js"></script>
 
     <script>
-      // --- NEW: make buttons bigger (minimal CSS injected, no refactor) ---
-      (function styleButtons() {
-        const css = `
-          button {
-            font-size: 20px;
-            padding: 14px 18px;
-            margin: 6px 6px 6px 0;
-            border-radius: 10px;
-          }
-          pre {
-            font-size: 14px;
-            padding: 10px;
-          }
-        `;
-        const style = document.createElement("style");
-        style.textContent = css;
-        document.head.appendChild(style);
-      })();
-
       const logEl = document.getElementById("log");
       const btnConnect = document.getElementById("btnConnect");
       const btnOpenMM = document.getElementById("btnOpenMM");
@@ -46,7 +93,10 @@
       const loadingMessage = document.getElementById("loadingMessage");
       const errorMessage = document.getElementById("errorMessage");
       const retryMessage = document.getElementById("retryMessage");
-      const mmNotice = document.getElementById("mmNotice");
+
+      const mmModalOverlay = document.getElementById("mmModalOverlay");
+      const btnModalOpenMM = document.getElementById("btnModalOpenMM");
+      const btnModalClose = document.getElementById("btnModalClose");
 
       let retryAttempts = 0;
 
@@ -80,13 +130,33 @@
         retryMessage.style.display = "none";
       }
 
-      // --- NEW: notice helpers (no behavior change, just guidance) ---
-      function showMMNotice() {
-        mmNotice.style.display = "block";
+      function openModal() {
+        mmModalOverlay.style.display = "flex";
       }
 
-      function hideMMNotice() {
-        mmNotice.style.display = "none";
+      function closeModal() {
+        mmModalOverlay.style.display = "none";
+      }
+
+      // Opens MetaMask app directly (not WC deep link)
+      function openMetaMaskApp() {
+        // Android usually supports the scheme.
+        // If scheme fails, universal link is a reasonable fallback.
+        const isAndroid = /Android/i.test(navigator.userAgent);
+        const scheme = "metamask://";
+        const universal = "https://metamask.app.link/";
+
+        // Try scheme first (fast), then fallback shortly after.
+        location.href = scheme;
+        if (!isAndroid) {
+          // Non-Android: just use universal (safer)
+          location.href = universal;
+          return;
+        }
+        setTimeout(() => {
+          // If scheme didn't work, universal might.
+          location.href = universal;
+        }, 400);
       }
 
       // ---- CONFIG ----
@@ -136,7 +206,7 @@
           btnOpenMM.disabled = true;
           btnDisconnect.disabled = true;
           wcUri = null;
-          hideMMNotice();
+          closeModal();
         });
 
         provider.on("accountsChanged", (accounts) => {
@@ -152,40 +222,31 @@
       }
 
       async function ensureSepoliaNetwork() {
-        // Check current chain
         const currentHex = await provider.request({ method: "eth_chainId" });
         log("current chainId:", currentHex);
 
         if (String(currentHex).toLowerCase() === SEPOLIA_HEX) {
           log("Already on Sepolia.");
-          hideMMNotice();
           return;
         }
 
-        // Try switch first
         try {
-          showLoading("Requesting switch to Sepolia... If no prompt appears, tap 'Open MetaMask'.");
-          showMMNotice(); // NEW: guide user to Open MetaMask for approvals
-
+          showLoading("Requesting switch to Sepolia...");
           await provider.request({
             method: "wallet_switchEthereumChain",
             params: [{ chainId: SEPOLIA_HEX }]
           });
-
           log("Switched to Sepolia.");
           hideLoading();
-          hideMMNotice();
           return;
         } catch (e) {
           const code = e && (e.code ?? e?.data?.originalError?.code);
           const msg = e && (e.message || String(e));
-
           log("switch error:", msg);
 
-          // 4902 = chain not added (common MetaMask behavior)
           if (code === 4902) {
-            showLoading("Sepolia not added. Requesting add network... Tap 'Open MetaMask' to approve.");
-            showMMNotice(); // NEW: guide user again
+            log("Sepolia not added. Requesting add network...");
+            showLoading("Sepolia not added. Requesting add network...");
 
             await provider.request({
               method: "wallet_addEthereumChain",
@@ -198,8 +259,8 @@
               }]
             });
 
-            showLoading("Network add requested. Now switching... Tap 'Open MetaMask' if needed.");
-            showMMNotice();
+            log("Network add requested. Now switching to Sepolia...");
+            showLoading("Now requesting switch to Sepolia...");
 
             await provider.request({
               method: "wallet_switchEthereumChain",
@@ -208,14 +269,14 @@
 
             log("Switched to Sepolia after adding.");
             hideLoading();
-            hideMMNotice();
             return;
           }
 
-          // Not a "not added" error: user rejected or wallet limitation
-          showError("Unable to switch to Sepolia. Tap 'Open MetaMask' and check for a pending prompt.");
+          showError("Unable to switch to Sepolia. If there is a pending prompt, open MetaMask and approve it.");
           hideLoading();
-          showMMNotice();
+
+          // Important: show popup telling user to go to MetaMask now
+          openModal();
           throw e;
         }
       }
@@ -225,15 +286,22 @@
         log(`Retry attempt ${retryAttempts} of 3`);
         if (retryAttempts <= 3) {
           showRetryMessage();
-          showMMNotice(); // NEW: remind user to tap Open MetaMask if prompt isn't visible
           setTimeout(async () => {
-            await ensureSepoliaNetwork();
+            try {
+              await ensureSepoliaNetwork();
+              retryAttempts = 0;
+              hideRetryMessage();
+              closeModal();
+            } catch (_) {
+              // keep retry loop alive
+              if (retryAttempts >= 3) hideRetryMessage();
+            }
           }, 2000);
         } else {
           log("Max retry attempts reached. Please try again later.");
-          showError("Failed to switch to Sepolia after multiple attempts. Tap 'Open MetaMask' to check pending prompts.");
+          showError("Failed to switch to Sepolia after multiple attempts.");
           hideRetryMessage();
-          showMMNotice();
+          openModal();
         }
       }
 
@@ -241,25 +309,26 @@
         try {
           hideError();
           hideRetryMessage();
-          hideMMNotice();
+          closeModal();
 
-          showLoading("Please wait, connecting... After approval we will request Sepolia switch.");
-
+          showLoading("Please wait, connecting...");
           await ensureProvider();
 
           log("Starting connection. Tap 'Open MetaMask' -> approve -> return here.");
-
-          // Triggers display_uri; resolves after wallet approval
           await provider.connect();
 
-          // This request happens after you return to the dapp (mobile behavior)
+          // After connection, we request the Sepolia switch.
+          // If MetaMask doesn't surface it immediately, our modal helps the user jump back to MetaMask.
           await ensureSepoliaNetwork();
           retryAttempts = 0;
 
           btnDisconnect.disabled = false;
+          closeModal();
         } catch (e) {
-          log("connect error:", e?.message || e);
+          log("connect/switch error:", e?.message || e);
           retrySwitch();
+        } finally {
+          hideLoading();
         }
       };
 
@@ -281,13 +350,24 @@
         try {
           if (!provider) return;
           await provider.disconnect();
+          closeModal();
         } catch (e) {
           log("disconnect error:", e?.message || e);
         }
       };
+
+      // Modal buttons
+      btnModalOpenMM.onclick = () => {
+        log("Opening MetaMask (for approval)...");
+        openMetaMaskApp();
+      };
+      btnModalClose.onclick = () => {
+        closeModal();
+      };
     </script>
   </body>
 </html>
+
 
 
 
