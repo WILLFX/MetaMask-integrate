@@ -8,7 +8,6 @@
     <pre id="log"></pre>
     <div id="loadingMessage" style="display:none;">Please wait, connecting and switching to Sepolia...</div>
     <div id="errorMessage" style="display:none; color: red;"></div>
-    <div id="retryMessage" style="display:none; color: orange;">Retrying to switch networks...</div>
 
     <!-- WalletConnect v2 EthereumProvider (UMD build, no bundler) -->
     <script src="https://unpkg.com/@walletconnect/ethereum-provider@2.23.3/dist/index.umd.js"></script>
@@ -20,9 +19,6 @@
       const btnDisconnect = document.getElementById("btnDisconnect");
       const loadingMessage = document.getElementById("loadingMessage");
       const errorMessage = document.getElementById("errorMessage");
-      const retryMessage = document.getElementById("retryMessage");
-
-      let retryAttempts = 0;
 
       function log(...args) {
         logEl.textContent += args.map(String).join(" ") + "\n";
@@ -46,16 +42,8 @@
         errorMessage.style.display = "none";
       }
 
-      function showRetryMessage() {
-        retryMessage.style.display = "block";
-      }
-
-      function hideRetryMessage() {
-        retryMessage.style.display = "none";
-      }
-
       // ---- CONFIG ----
-      const projectId = "19acc37cc9d91b4b39b0cca952297654"; // Replace with your WalletConnect project ID
+      const projectId = "YOUR_PROJECT_ID_HERE"; // Replace with your WalletConnect project ID
       const SEPOLIA = 11155111;
       const SEPOLIA_HEX = "0xaa36a7"; // 11155111
       const SEPOLIA_RPC_PRIMARY = "https://rpc.sepolia.org";
@@ -65,6 +53,7 @@
       // ---- STATE ----
       let provider = null;
       let wcUri = null;
+      let retryAttempts = 0;
 
       async function ensureProvider() {
         if (provider) return provider;
@@ -177,16 +166,14 @@
 
       async function retrySwitch() {
         retryAttempts++;
-        log(`Retry attempt ${retryAttempts} of 3`);
+        log(`Retry attempt ${retryAttempts}`);
         if (retryAttempts <= 3) {
-          showRetryMessage(); // Show retry message
+          // Retry after a delay of 2 seconds
           setTimeout(async () => {
             await ensureSepoliaNetwork();
-          }, 2000); // Retry after 2 seconds
+          }, 2000);
         } else {
           log("Max retry attempts reached. Please try again later.");
-          showError("Failed to switch to Sepolia after multiple attempts.");
-          hideRetryMessage(); // Hide retry message
         }
       }
 
@@ -241,6 +228,7 @@
     </script>
   </body>
 </html>
+
 
 
 
