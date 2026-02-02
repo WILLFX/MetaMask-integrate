@@ -6,14 +6,39 @@
     <button id="btnDisconnect" disabled>Disconnect</button>
 
     <pre id="log"></pre>
+
     <div id="loadingMessage" style="display:none;">Please wait, connecting and switching to Sepolia...</div>
     <div id="errorMessage" style="display:none; color: red;"></div>
     <div id="retryMessage" style="display:none; color: orange;">Retrying to switch networks...</div>
+
+    <!-- NEW: simple notification -->
+    <div id="mmNotice" style="display:none; margin-top:10px; padding:10px; border:1px solid #ccc;">
+      If you don’t see the Sepolia prompt yet, tap <b>Open MetaMask</b> to approve the network switch/add.
+    </div>
 
     <!-- WalletConnect v2 EthereumProvider (UMD build, no bundler) -->
     <script src="https://unpkg.com/@walletconnect/ethereum-provider@2.23.3/dist/index.umd.js"></script>
 
     <script>
+      // --- NEW: make buttons bigger (minimal CSS injected, no refactor) ---
+      (function styleButtons() {
+        const css = `
+          button {
+            font-size: 20px;
+            padding: 14px 18px;
+            margin: 6px 6px 6px 0;
+            border-radius: 10px;
+          }
+          pre {
+            font-size: 14px;
+            padding: 10px;
+          }
+        `;
+        const style = document.createElement("style");
+        style.textContent = css;
+        document.head.appendChild(style);
+      })();
+
       const logEl = document.getElementById("log");
       const btnConnect = document.getElementById("btnConnect");
       const btnOpenMM = document.getElementById("btnOpenMM");
@@ -21,6 +46,9 @@
       const loadingMessage = document.getElementById("loadingMessage");
       const errorMessage = document.getElementById("errorMessage");
       const retryMessage = document.getElementById("retryMessage");
+      const mmNotice = document.getElementById("mmNotice");
+
+      let retryAttempts = 0;
 
       function log(...args) {
         logEl.textContent += args.map(String).join(" ") + "\n";
@@ -44,19 +72,25 @@
         errorMessage.style.display = "none";
       }
 
-      function showRetryMessage(message) {
+      function showRetryMessage() {
         retryMessage.style.display = "block";
-        retryMessage.textContent = message || "Retrying to switch networks...";
       }
 
       function hideRetryMessage() {
         retryMessage.style.display = "none";
       }
 
+      // --- NEW: notice helpers (no behavior change, just guidance) ---
+      function showMMNotice() {
+        mmNotice.style.display = "block";
+      }
+
+      function hideMMNotice() {
+        mmNotice.style.display = "none";
+      }
+
       // ---- CONFIG ----
       const projectId = "19acc37cc9d91b4b39b0cca952297654"; // Replace with your WalletConnect project ID
-
-      // Sepolia
       const SEPOLIA = 11155111;
       const SEPOLIA_HEX = "0xaa36a7"; // 11155111
       const SEPOLIA_RPC_PRIMARY = "https://rpc.sepolia.org";
@@ -66,11 +100,6 @@
       // ---- STATE ----
       let provider = null;
       let wcUri = null;
-
-      // For "switch on resume" behavior
-      let pendingSwitch = false;
-      let switchingInProgress = false;
-      let switchAttempts = 0;
 
       async function ensureProvider() {
         if (provider) return provider;
@@ -107,13 +136,7 @@
           btnOpenMM.disabled = true;
           btnDisconnect.disabled = true;
           wcUri = null;
-
-          pendingSwitch = false;
-          switchingInProgress = false;
-          switchAttempts = 0;
-
-          hideLoading();
-          hideRetryMessage();
+          hideMMNotice();
         });
 
         provider.on("accountsChanged", (accounts) => {
@@ -135,12 +158,14 @@
 
         if (String(currentHex).toLowerCase() === SEPOLIA_HEX) {
           log("Already on Sepolia.");
+          hideMMNotice();
           return;
         }
 
         // Try switch first
         try {
-          showLoading("Requesting switch to Sepolia...");
+          showLoading("Requesting switch to Sepolia... If no prompt appears, tap 'Open MetaMask'.");
+          showMMNotice(); // NEW: guide user to Open MetaMask for approvals
 
           await provider.request({
             method: "wallet_switchEthereumChain",
@@ -149,6 +174,7 @@
 
           log("Switched to Sepolia.");
           hideLoading();
+          hideMMNotice();
           return;
         } catch (e) {
           const code = e && (e.code ?? e?.data?.originalError?.code);
@@ -158,7 +184,8 @@
 
           // 4902 = chain not added (common MetaMask behavior)
           if (code === 4902) {
-            showLoading("Sepolia not added. Requesting add network...");
+            showLoading("Sepolia not added. Requesting add network... Tap 'Open MetaMask' to approve.");
+            showMMNotice(); // NEW: guide user again
 
             await provider.request({
               method: "wallet_addEthereumChain",
@@ -171,7 +198,8 @@
               }]
             });
 
-            showLoading("Network add requested. Now switching to Sepolia...");
+            showLoading("Network add requested. Now switching... Tap 'Open MetaMask' if needed.");
+            showMMNotice();
 
             await provider.request({
               method: "wallet_switchEthereumChain",
@@ -180,121 +208,58 @@
 
             log("Switched to Sepolia after adding.");
             hideLoading();
+            hideMMNotice();
             return;
           }
 
-          // 4001 = user rejected in MetaMask (common)
-          if (code === 4001) {
-            showError("You rejected the Sepolia switch/add request in MetaMask.");
-            hideLoading();
-            throw e;
-          }
-
-          // Other errors
-          showError("Unable to switch to Sepolia. Please open MetaMask and approve any pending prompts.");
+          // Not a "not added" error: user rejected or wallet limitation
+          showError("Unable to switch to Sepolia. Tap 'Open MetaMask' and check for a pending prompt.");
           hideLoading();
+          showMMNotice();
           throw e;
         }
       }
 
-      function isSessionLikelyReadyError(e) {
-        const msg = (e && (e.message || String(e))) || "";
-        // Heuristic: different wallets throw slightly different texts when WC session isn't fully ready.
-        return /not (initialized|connected)|disconnected|session|provider|not ready|transport/i.test(msg);
-      }
-
-      async function tryAutoSwitch(origin) {
-        // Only run if we said we intend to switch
-        if (!pendingSwitch || !provider) return;
-
-        // Avoid overlapping attempts
-        if (switchingInProgress) return;
-
-        switchingInProgress = true;
-
-        try {
-          hideError();
+      async function retrySwitch() {
+        retryAttempts++;
+        log(`Retry attempt ${retryAttempts} of 3`);
+        if (retryAttempts <= 3) {
+          showRetryMessage();
+          showMMNotice(); // NEW: remind user to tap Open MetaMask if prompt isn't visible
+          setTimeout(async () => {
+            await ensureSepoliaNetwork();
+          }, 2000);
+        } else {
+          log("Max retry attempts reached. Please try again later.");
+          showError("Failed to switch to Sepolia after multiple attempts. Tap 'Open MetaMask' to check pending prompts.");
           hideRetryMessage();
-
-          log(`[auto] triggered by: ${origin}`);
-
-          // Backoff schedule: fast but not spammy
-          const delays = [0, 350, 900, 1800];
-
-          for (let i = 0; i < delays.length; i++) {
-            switchAttempts = i + 1;
-
-            if (delays[i] > 0) {
-              showRetryMessage(`Preparing Sepolia switch (attempt ${switchAttempts}/${delays.length})...`);
-              await new Promise((r) => setTimeout(r, delays[i]));
-            } else {
-              showRetryMessage(`Preparing Sepolia switch (attempt ${switchAttempts}/${delays.length})...`);
-            }
-
-            try {
-              await ensureSepoliaNetwork();
-              // Success
-              pendingSwitch = false;
-              hideRetryMessage();
-              hideLoading();
-              log("[auto] Sepolia switch complete.");
-              return;
-            } catch (e) {
-              // If the user rejected, stop retrying (no point nagging)
-              const code = e && (e.code ?? e?.data?.originalError?.code);
-              if (code === 4001) {
-                log("[auto] user rejected request, stopping auto switch.");
-                pendingSwitch = false;
-                hideRetryMessage();
-                return;
-              }
-
-              // If it's likely a "session not ready" style error, keep looping.
-              // Otherwise, also keep looping a bit, but we'll show a clearer message at the end.
-              log(`[auto] attempt ${switchAttempts} failed:`, e?.message || e);
-              if (i === delays.length - 1) {
-                showError("Still waiting for MetaMask/WalletConnect to be ready. Tap 'Open MetaMask' and check for a pending prompt.");
-                hideRetryMessage();
-              }
-            }
-          }
-        } finally {
-          switchingInProgress = false;
+          showMMNotice();
         }
       }
-
-      // Auto-trigger switching when the page becomes active again
-      document.addEventListener("visibilitychange", () => {
-        if (!document.hidden) tryAutoSwitch("visibilitychange");
-      });
-
-      window.addEventListener("focus", () => tryAutoSwitch("focus"));
-      window.addEventListener("pageshow", () => tryAutoSwitch("pageshow"));
 
       btnConnect.onclick = async () => {
         try {
           hideError();
           hideRetryMessage();
-          showLoading("Please wait, connecting (MetaMask approval needed)...");
+          hideMMNotice();
+
+          showLoading("Please wait, connecting... After approval we will request Sepolia switch.");
 
           await ensureProvider();
 
           log("Starting connection. Tap 'Open MetaMask' -> approve -> return here.");
 
-          // Triggers display_uri; resolves after wallet approval (when user returns to dapp)
+          // Triggers display_uri; resolves after wallet approval
           await provider.connect();
 
-          // Mark that we want to switch, and let resume hooks handle it immediately on return.
-          pendingSwitch = true;
-
-          // Try immediately too (in case the runtime is still active and ready)
-          await tryAutoSwitch("post-connect");
+          // This request happens after you return to the dapp (mobile behavior)
+          await ensureSepoliaNetwork();
+          retryAttempts = 0;
 
           btnDisconnect.disabled = false;
         } catch (e) {
           log("connect error:", e?.message || e);
-          showError("Connection failed. Try again, then tap 'Open MetaMask' if needed.");
-          hideLoading();
+          retrySwitch();
         }
       };
 
@@ -304,14 +269,12 @@
         const uri = encodeURIComponent(wcUri);
         const isAndroid = /Android/i.test(navigator.userAgent);
 
-        // Android: scheme often preserves wc params better.
         const schemeLink = `metamask://wc?uri=${uri}`;
-        // Fallback
         const universalLink = `https://metamask.app.link/wc?uri=${uri}`;
 
         const target = isAndroid ? schemeLink : universalLink;
         log("Opening MetaMask via:", target);
-        location.href = target; // user-gesture navigation
+        location.href = target;
       };
 
       btnDisconnect.onclick = async () => {
@@ -325,6 +288,7 @@
     </script>
   </body>
 </html>
+
 
 
 
