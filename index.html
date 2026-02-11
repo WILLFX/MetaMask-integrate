@@ -19,10 +19,6 @@
 
     <button id="btnConnect">Connect</button>
     <button id="btnOpenMM" disabled>Open MetaMask</button>
-
-    <!-- NEW: shows only when switching/add-network is being initiated -->
-    <button id="btnContinueMM" style="display:none;" disabled>Continue to MetaMask</button>
-
     <button id="btnDisconnect" disabled>Disconnect</button>
 
     <pre id="log"></pre>
@@ -37,7 +33,6 @@
       const logEl = document.getElementById("log");
       const btnConnect = document.getElementById("btnConnect");
       const btnOpenMM = document.getElementById("btnOpenMM");
-      const btnContinueMM = document.getElementById("btnContinueMM"); // NEW
       const btnDisconnect = document.getElementById("btnDisconnect");
       const loadingMessage = document.getElementById("loadingMessage");
       const errorMessage = document.getElementById("errorMessage");
@@ -87,34 +82,24 @@
       let provider = null;
       let wcUri = null;
 
-      // NEW: only show the "Continue to MetaMask" button once per attempt
-      let continueShown = false;
+      // Only deep-link nudge once per connect attempt
+      let mmNudgeSent = false;
 
-      function showContinueToMetaMaskOnce() {
-        if (continueShown) return;
-        continueShown = true;
-        btnContinueMM.style.display = "inline-block";
-        btnContinueMM.disabled = false;
-      }
+      // Best-effort: trigger Chrome's system "Continue to MetaMask?" prompt
+      // NOTE: Some devices only show the prompt on a direct user tap; if so, the user can still tap "Open MetaMask".
+      function nudgeOpenMetaMaskOnce(reason) {
+        if (mmNudgeSent) return;
+        mmNudgeSent = true;
 
-      function hideContinueToMetaMask() {
-        btnContinueMM.style.display = "none";
-        btnContinueMM.disabled = true;
-      }
-
-      // NEW: open MetaMask app WITHOUT needing a wcUri (for approving switch/add prompts)
-      function openMetaMaskApp() {
         const isAndroid = /Android/i.test(navigator.userAgent);
+        const target = isAndroid ? "metamask://" : "https://metamask.app.link/";
 
-        // Simple "open app" links:
-        // - Android scheme tends to open directly
-        // - universal link works as fallback
-        const scheme = "metamask://";
-        const universal = "https://metamask.app.link/";
+        log(reason, "Opening MetaMask via:", target);
 
-        const target = isAndroid ? scheme : universal;
-        log("Opening MetaMask via:", target);
-        location.href = target; // should trigger Chrome's system prompt
+        // tiny delay to avoid racing UI updates
+        setTimeout(() => {
+          try { location.href = target; } catch (_) {}
+        }, 120);
       }
 
       async function ensureProvider() {
@@ -126,7 +111,7 @@
         provider = await WC.EthereumProvider.init({
           projectId,
 
-          // KEEP: relay override (do not change)
+          // KEEP: relay override (unchanged)
           relayUrl: "wss://relay.walletconnect.com",
 
           showQrModal: false,
@@ -156,7 +141,6 @@
           btnOpenMM.disabled = true;
           btnDisconnect.disabled = true;
           wcUri = null;
-          hideContinueToMetaMask(); // NEW
         });
 
         provider.on("accountsChanged", (accounts) => {
@@ -177,13 +161,12 @@
 
         if (String(currentHex).toLowerCase() === SEPOLIA_HEX) {
           log("Already on Sepolia.");
-          hideContinueToMetaMask(); // NEW
           return;
         }
 
         try {
-          // NEW: show a "Continue to MetaMask" button so user can trigger the Chrome system prompt
-          showContinueToMetaMaskOnce();
+          // Only the system prompt (no web notifications)
+          nudgeOpenMetaMaskOnce("Approve Sepolia switch/add in MetaMask.");
 
           showLoading("Requesting switch to Sepolia...");
 
@@ -194,7 +177,6 @@
 
           log("Switched to Sepolia.");
           hideLoading();
-          hideContinueToMetaMask(); // NEW
           return;
         } catch (e) {
           const code = e && (e.code ?? e?.data?.originalError?.code);
@@ -203,8 +185,8 @@
           log("switch error:", msg);
 
           if (code === 4902) {
-            // NEW: keep continue button visible for approval flow
-            showContinueToMetaMaskOnce();
+            // Still only the system prompt
+            nudgeOpenMetaMaskOnce("Approve Sepolia switch/add in MetaMask.");
 
             log("Sepolia not added. Requesting add network...");
             await provider.request({
@@ -226,7 +208,6 @@
 
             log("Switched to Sepolia after adding.");
             hideLoading();
-            hideContinueToMetaMask(); // NEW
             return;
           }
 
@@ -253,9 +234,8 @@
 
       btnConnect.onclick = async () => {
         try {
-          // NEW: reset per attempt
-          continueShown = false;
-          hideContinueToMetaMask();
+          // Reset per attempt state
+          mmNudgeSent = false;
           hideError();
           hideRetryMessage();
 
@@ -267,7 +247,6 @@
 
           await provider.connect();
 
-          // After returning to dapp, start switch flow.
           await ensureSepoliaNetwork();
           retryAttempts = 0;
 
@@ -289,12 +268,7 @@
 
         const target = isAndroid ? schemeLink : universalLink;
         log("Opening MetaMask via:", target);
-        location.href = target; // user-gesture navigation
-      };
-
-      // NEW: user-tap triggers the Chrome "Continue to MetaMask?" system prompt
-      btnContinueMM.onclick = () => {
-        openMetaMaskApp();
+        location.href = target;
       };
 
       btnDisconnect.onclick = async () => {
@@ -308,6 +282,7 @@
     </script>
   </body>
 </html>
+
 
 
 
