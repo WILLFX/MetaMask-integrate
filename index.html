@@ -1,7 +1,7 @@
 <!doctype html>
 <html>
   <body>
-    <!-- Simple styles for bigger buttons -->
+    <!-- NEW: Simple styles for bigger buttons -->
     <style>
       body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; padding: 16px; }
       button {
@@ -71,7 +71,7 @@
       }
 
       // ---- CONFIG ----
-      const projectId = "19acc37cc9d91b4b39b0cca952297654";
+      const projectId = "19acc37cc9d91b4b39b0cca952297654"; // Replace with your WalletConnect project ID
       const SEPOLIA = 11155111;
       const SEPOLIA_HEX = "0xaa36a7"; // 11155111
       const SEPOLIA_RPC_PRIMARY = "https://rpc.sepolia.org";
@@ -82,24 +82,58 @@
       let provider = null;
       let wcUri = null;
 
-      // Only deep-link nudge once per connect attempt
-      let mmNudgeSent = false;
+      // NEW: Notification control so we only ping once per connect attempt
+      let switchNotifySent = false;
 
-      // Best-effort: trigger Chrome's system "Continue to MetaMask?" prompt
-      // NOTE: Some devices only show the prompt on a direct user tap; if so, the user can still tap "Open MetaMask".
-      function nudgeOpenMetaMaskOnce(reason) {
-        if (mmNudgeSent) return;
-        mmNudgeSent = true;
+      // NEW: Deep-link prompt control (Chrome “Continue to MetaMask?”) once per connect attempt
+      let switchDeepLinkSent = false;
+
+      // NEW: Chrome-style notification helpers (Web Notifications)
+      async function ensureNotificationPermissionIfNeeded() {
+        // Only ask once, and only on a user gesture (Connect click)
+        if (!("Notification" in window)) return false;
+        if (Notification.permission === "granted") return true;
+        if (Notification.permission === "denied") return false;
+
+        try {
+          const p = await Notification.requestPermission();
+          return p === "granted";
+        } catch (_) {
+          return false;
+        }
+      }
+
+      function notifySwitchNeedsApprovalOnce() {
+        if (switchNotifySent) return;
+        switchNotifySent = true;
+
+        if (!("Notification" in window)) return;
+        if (Notification.permission !== "granted") return;
+
+        try {
+          new Notification("MetaMask approval needed", {
+            body: "Approve the Sepolia network switch/add in MetaMask.",
+            icon: "https://metamask.io/images/favicon-32.png"
+          });
+        } catch (_) {
+          // Some Android builds can throw if notifications aren’t available; ignore silently.
+        }
+      }
+
+      // NEW: Trigger Chrome/Android system “Continue to MetaMask?” prompt (Chrome owns the UI)
+      // This runs ONLY during chain switching, and only once per connect attempt.
+      function promptContinueToMetaMaskOnce() {
+        if (switchDeepLinkSent) return;
+        switchDeepLinkSent = true;
 
         const isAndroid = /Android/i.test(navigator.userAgent);
+
+        // This navigation is what causes the Chrome system prompt (when Chrome decides to show it).
+        // Note: Chrome may open directly (no prompt) if the user previously chose “Always”.
         const target = isAndroid ? "metamask://" : "https://metamask.app.link/";
 
-        log(reason, "Opening MetaMask via:", target);
-
-        // tiny delay to avoid racing UI updates
-        setTimeout(() => {
-          try { location.href = target; } catch (_) {}
-        }, 120);
+        log("Prompting Chrome to continue to MetaMask for approval...");
+        location.href = target;
       }
 
       async function ensureProvider() {
@@ -110,10 +144,9 @@
 
         provider = await WC.EthereumProvider.init({
           projectId,
-
-          // KEEP: relay override (unchanged)
-          relayUrl: "wss://relay.walletconnect.com",
-
+          // relayUrl already added earlier in your version; keep it if you have it in your deployed file.
+          // If you want it here too, uncomment next line:
+          // relayUrl: "wss://relay.walletconnect.com",
           showQrModal: false,
           metadata: {
             name: "Bare WC Demo",
@@ -156,6 +189,7 @@
       }
 
       async function ensureSepoliaNetwork() {
+        // Check current chain
         const currentHex = await provider.request({ method: "eth_chainId" });
         log("current chainId:", currentHex);
 
@@ -164,16 +198,23 @@
           return;
         }
 
+        // Try switch first
         try {
-          // Only the system prompt (no web notifications)
-          nudgeOpenMetaMaskOnce("Approve Sepolia switch/add in MetaMask.");
+          // Notify once (web notification)
+          notifySwitchNeedsApprovalOnce();
 
           showLoading("Requesting switch to Sepolia...");
 
-          await provider.request({
+          // IMPORTANT: fire the request, THEN prompt to open MetaMask
+          const switchPromise = provider.request({
             method: "wallet_switchEthereumChain",
             params: [{ chainId: SEPOLIA_HEX }]
           });
+
+          // NEW: Trigger Chrome/Android system prompt to open MetaMask (only during switching)
+          promptContinueToMetaMaskOnce();
+
+          await switchPromise;
 
           log("Switched to Sepolia.");
           hideLoading();
@@ -184,12 +225,13 @@
 
           log("switch error:", msg);
 
+          // 4902 = chain not added (common MetaMask behavior)
           if (code === 4902) {
-            // Still only the system prompt
-            nudgeOpenMetaMaskOnce("Approve Sepolia switch/add in MetaMask.");
+            notifySwitchNeedsApprovalOnce();
 
             log("Sepolia not added. Requesting add network...");
-            await provider.request({
+
+            const addPromise = provider.request({
               method: "wallet_addEthereumChain",
               params: [{
                 chainId: SEPOLIA_HEX,
@@ -200,11 +242,22 @@
               }]
             });
 
+            // NEW: Prompt once (if not already prompted)
+            promptContinueToMetaMaskOnce();
+
+            await addPromise;
+
             log("Network add requested. Now switching to Sepolia...");
-            await provider.request({
+
+            const switchPromise2 = provider.request({
               method: "wallet_switchEthereumChain",
               params: [{ chainId: SEPOLIA_HEX }]
             });
+
+            // Still only once overall
+            promptContinueToMetaMaskOnce();
+
+            await switchPromise2;
 
             log("Switched to Sepolia after adding.");
             hideLoading();
@@ -234,19 +287,23 @@
 
       btnConnect.onclick = async () => {
         try {
-          // Reset per attempt state
-          mmNudgeSent = false;
-          hideError();
-          hideRetryMessage();
+          // reset per-attempt state
+          switchNotifySent = false;
+          switchDeepLinkSent = false;
+
+          await ensureNotificationPermissionIfNeeded();
 
           showLoading("Please wait, connecting and switching to Sepolia...");
 
           await ensureProvider();
 
-          log("Starting connection. Tap 'Open MetaMask' -> approve.");
+          log("Starting connection. Tap 'Open MetaMask' -> approve -> stay in MetaMask.");
 
+          // Triggers display_uri; resolves after wallet approval
           await provider.connect();
 
+          // After returning to dapp, we start the switch flow;
+          // this will trigger the Chrome “Continue to MetaMask?” prompt during switching.
           await ensureSepoliaNetwork();
           retryAttempts = 0;
 
@@ -282,6 +339,7 @@
     </script>
   </body>
 </html>
+
 
 
 
