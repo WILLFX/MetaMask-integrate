@@ -1,7 +1,7 @@
 <!doctype html>
 <html>
   <body>
-   
+    <!-- NEW: Simple styles for bigger buttons -->
     <style>
       body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; padding: 16px; }
       button {
@@ -71,9 +71,9 @@
       }
 
       // ---- CONFIG ----
-      const projectId = "19acc37cc9d91b4b39b0cca952297654";
+      const projectId = "19acc37cc9d91b4b39b0cca952297654"; // Replace with your WalletConnect project ID
       const SEPOLIA = 11155111;
-      const SEPOLIA_HEX = "0xaa36a7";
+      const SEPOLIA_HEX = "0xaa36a7"; // 11155111
       const SEPOLIA_RPC_PRIMARY = "https://rpc.sepolia.org";
       const SEPOLIA_RPC_SECONDARY = "https://rpc2.sepolia.org";
       const SEPOLIA_EXPLORER = "https://sepolia.etherscan.io";
@@ -82,24 +82,39 @@
       let provider = null;
       let wcUri = null;
 
-      // NEW: only prompt "Continue to MetaMask" once per connect attempt
-      let switchHandoffPrompted = false;
+      // NEW: Notification control so we only ping once per connect attempt
+      let switchNotifySent = false;
 
-      // NEW: trigger the Chrome/Android app-handoff prompt (user gesture required)
-      function promptContinueToMetaMaskForSwitchOnce() {
-        if (switchHandoffPrompted) return;
+      // NEW: Chrome-style notification helpers (Web Notifications)
+      async function ensureNotificationPermissionIfNeeded() {
+        // Only ask once, and only on a user gesture (Connect click)
+        if (!("Notification" in window)) return false;
+        if (Notification.permission === "granted") return true;
+        if (Notification.permission === "denied") return false;
 
-       
-        const ok = confirm("Continue to MetaMask to approve the Sepolia network switch/add?");
-        if (!ok) return;
+        try {
+          const p = await Notification.requestPermission();
+          return p === "granted";
+        } catch (_) {
+          return false;
+        }
+      }
 
-        switchHandoffPrompted = true;
+      function notifySwitchNeedsApprovalOnce() {
+        if (switchNotifySent) return;
+        switchNotifySent = true;
 
-        const isAndroid = /Android/i.test(navigator.userAgent);
-        const target = isAndroid ? "metamask://" : "https://metamask.app.link/";
+        if (!("Notification" in window)) return;
+        if (Notification.permission !== "granted") return;
 
-        log("Continuing to MetaMask for Sepolia approval...");
-        location.href = target;
+        try {
+          new Notification("MetaMask approval needed", {
+            body: "Approve the Sepolia network switch/add in MetaMask.",
+            icon: "https://metamask.io/images/favicon-32.png"
+          });
+        } catch (_) {
+          // Some Android builds can throw if notifications aren’t available; ignore silently.
+        }
       }
 
       async function ensureProvider() {
@@ -110,6 +125,7 @@
 
         provider = await WC.EthereumProvider.init({
           projectId,
+          // NEW: force relay hostname to reduce DNS/WS flakiness on some networks
           relayUrl: "wss://relay.walletconnect.com",
           showQrModal: false,
           metadata: {
@@ -153,6 +169,7 @@
       }
 
       async function ensureSepoliaNetwork() {
+        // Check current chain
         const currentHex = await provider.request({ method: "eth_chainId" });
         log("current chainId:", currentHex);
 
@@ -163,18 +180,15 @@
 
         // Try switch first
         try {
+          // NEW: notify user that MetaMask approval is needed (only once)
+          notifySwitchNeedsApprovalOnce();
+
           showLoading("Requesting switch to Sepolia...");
 
-          
-          const switchPromise = provider.request({
+          await provider.request({
             method: "wallet_switchEthereumChain",
             params: [{ chainId: SEPOLIA_HEX }]
           });
-
-          // NEW: system handoff prompt to MetaMask for the approval step
-          promptContinueToMetaMaskForSwitchOnce();
-
-          await switchPromise;
 
           log("Switched to Sepolia.");
           hideLoading();
@@ -185,11 +199,13 @@
 
           log("switch error:", msg);
 
+          // 4902 = chain not added (common MetaMask behavior)
           if (code === 4902) {
-            log("Sepolia not added. Requesting add network...");
-            showLoading("Sepolia not added. Requesting add network...");
+            // NEW: still part of switching flow, keep the same single notification
+            notifySwitchNeedsApprovalOnce();
 
-            const addPromise = provider.request({
+            log("Sepolia not added. Requesting add network...");
+            await provider.request({
               method: "wallet_addEthereumChain",
               params: [{
                 chainId: SEPOLIA_HEX,
@@ -200,29 +216,18 @@
               }]
             });
 
-            // NEW: same handoff prompt (only once per attempt)
-            promptContinueToMetaMaskForSwitchOnce();
-
-            await addPromise;
-
             log("Network add requested. Now switching to Sepolia...");
-            showLoading("Switching to Sepolia...");
-
-            const switch2Promise = provider.request({
+            await provider.request({
               method: "wallet_switchEthereumChain",
               params: [{ chainId: SEPOLIA_HEX }]
             });
-
-            // If the user canceled earlier, prompt can still show here
-            promptContinueToMetaMaskForSwitchOnce();
-
-            await switch2Promise;
 
             log("Switched to Sepolia after adding.");
             hideLoading();
             return;
           }
 
+          // Not a "not added" error: user rejected or wallet limitation
           showError("Error: Unable to switch to Sepolia. Please approve the switch/add in MetaMask.");
           hideLoading();
           throw e;
@@ -233,21 +238,25 @@
         retryAttempts++;
         log(`Retry attempt ${retryAttempts} of 3`);
         if (retryAttempts <= 3) {
-          showRetryMessage();
+          showRetryMessage(); // Show retry message
           setTimeout(async () => {
             await ensureSepoliaNetwork();
-          }, 2000);
+          }, 2000); // Retry after 2 seconds
         } else {
           log("Max retry attempts reached. Please try again later.");
           showError("Failed to switch to Sepolia after multiple attempts.");
-          hideRetryMessage();
+          hideRetryMessage(); // Hide retry message
         }
       }
 
       btnConnect.onclick = async () => {
         try {
-          // reset per-attempt state
-          switchHandoffPrompted = false;
+          // NEW: reset per-attempt state
+          switchNotifySent = false;
+
+          // NEW: request notification permission (only on click, and only once)
+          // If user denies, we just won't show the popup later.
+          await ensureNotificationPermissionIfNeeded();
 
           showLoading("Please wait, connecting and switching to Sepolia...");
 
@@ -258,13 +267,14 @@
           // Triggers display_uri; resolves after wallet approval
           await provider.connect();
 
+          // After returning to dapp, we start the switch flow; notification will fire here.
           await ensureSepoliaNetwork();
-          retryAttempts = 0;
+          retryAttempts = 0; // Reset retry attempts after successful switch
 
           btnDisconnect.disabled = false;
         } catch (e) {
           log("connect error:", e?.message || e);
-          retrySwitch();
+          retrySwitch(); // Retry if the chain switch failed
         }
       };
 
@@ -274,12 +284,15 @@
         const uri = encodeURIComponent(wcUri);
         const isAndroid = /Android/i.test(navigator.userAgent);
 
+        // Android: scheme often preserves wc params better.
         const schemeLink = `metamask://wc?uri=${uri}`;
+
+        // Non-Android fallback
         const universalLink = `https://metamask.app.link/wc?uri=${uri}`;
 
         const target = isAndroid ? schemeLink : universalLink;
         log("Opening MetaMask via:", target);
-        location.href = target;
+        location.href = target; // user-gesture navigation
       };
 
       btnDisconnect.onclick = async () => {
@@ -290,9 +303,11 @@
           log("disconnect error:", e?.message || e);
         }
       };
+
     </script>
   </body>
 </html>
+
 
 
 
