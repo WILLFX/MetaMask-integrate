@@ -19,6 +19,10 @@
 
     <button id="btnConnect">Connect</button>
     <button id="btnOpenMM" disabled>Open MetaMask</button>
+
+    <!-- NEW: shows only when switching/add-network is being initiated -->
+    <button id="btnContinueMM" style="display:none;" disabled>Continue to MetaMask</button>
+
     <button id="btnDisconnect" disabled>Disconnect</button>
 
     <pre id="log"></pre>
@@ -33,6 +37,7 @@
       const logEl = document.getElementById("log");
       const btnConnect = document.getElementById("btnConnect");
       const btnOpenMM = document.getElementById("btnOpenMM");
+      const btnContinueMM = document.getElementById("btnContinueMM"); // NEW
       const btnDisconnect = document.getElementById("btnDisconnect");
       const loadingMessage = document.getElementById("loadingMessage");
       const errorMessage = document.getElementById("errorMessage");
@@ -73,7 +78,7 @@
       // ---- CONFIG ----
       const projectId = "19acc37cc9d91b4b39b0cca952297654";
       const SEPOLIA = 11155111;
-      const SEPOLIA_HEX = "0xaa36a7";
+      const SEPOLIA_HEX = "0xaa36a7"; // 11155111
       const SEPOLIA_RPC_PRIMARY = "https://rpc.sepolia.org";
       const SEPOLIA_RPC_SECONDARY = "https://rpc2.sepolia.org";
       const SEPOLIA_EXPLORER = "https://sepolia.etherscan.io";
@@ -82,44 +87,34 @@
       let provider = null;
       let wcUri = null;
 
-      
-      let switchHandoffPrompted = false;
+      // NEW: only show the "Continue to MetaMask" button once per attempt
+      let continueShown = false;
 
-     
-      let switchNotifySent = false;
-
-      
-      function notifySwitchNeedsApprovalOnce() {
-        if (switchNotifySent) return;
-        switchNotifySent = true;
-
-        if (!("Notification" in window)) return;
-        if (Notification.permission !== "granted") return;
-
-        try {
-          new Notification("MetaMask approval needed", {
-            body: "Approve the Sepolia network switch/add in MetaMask.",
-            icon: "https://metamask.io/images/favicon-32.png"
-          });
-        } catch (_) {
-          
-        }
+      function showContinueToMetaMaskOnce() {
+        if (continueShown) return;
+        continueShown = true;
+        btnContinueMM.style.display = "inline-block";
+        btnContinueMM.disabled = false;
       }
 
-     
-      function promptContinueToMetaMaskForSwitchOnce() {
-        if (switchHandoffPrompted) return;
+      function hideContinueToMetaMask() {
+        btnContinueMM.style.display = "none";
+        btnContinueMM.disabled = true;
+      }
 
-        const ok = confirm("Continue to MetaMask to approve the Sepolia network switch/add?");
-        if (!ok) return;
-
-        switchHandoffPrompted = true;
-
+      // NEW: open MetaMask app WITHOUT needing a wcUri (for approving switch/add prompts)
+      function openMetaMaskApp() {
         const isAndroid = /Android/i.test(navigator.userAgent);
-        const target = isAndroid ? "metamask://" : "https://metamask.app.link/";
 
-        log("Continuing to MetaMask for Sepolia approval...");
-        location.href = target;
+        // Simple "open app" links:
+        // - Android scheme tends to open directly
+        // - universal link works as fallback
+        const scheme = "metamask://";
+        const universal = "https://metamask.app.link/";
+
+        const target = isAndroid ? scheme : universal;
+        log("Opening MetaMask via:", target);
+        location.href = target; // should trigger Chrome's system prompt
       }
 
       async function ensureProvider() {
@@ -130,7 +125,10 @@
 
         provider = await WC.EthereumProvider.init({
           projectId,
+
+          // KEEP: relay override (do not change)
           relayUrl: "wss://relay.walletconnect.com",
+
           showQrModal: false,
           metadata: {
             name: "Bare WC Demo",
@@ -158,6 +156,7 @@
           btnOpenMM.disabled = true;
           btnDisconnect.disabled = true;
           wcUri = null;
+          hideContinueToMetaMask(); // NEW
         });
 
         provider.on("accountsChanged", (accounts) => {
@@ -178,28 +177,24 @@
 
         if (String(currentHex).toLowerCase() === SEPOLIA_HEX) {
           log("Already on Sepolia.");
+          hideContinueToMetaMask(); // NEW
           return;
         }
 
         try {
+          // NEW: show a "Continue to MetaMask" button so user can trigger the Chrome system prompt
+          showContinueToMetaMaskOnce();
+
           showLoading("Requesting switch to Sepolia...");
 
-          
-          notifySwitchNeedsApprovalOnce();
-
-         
-          const switchPromise = provider.request({
+          await provider.request({
             method: "wallet_switchEthereumChain",
             params: [{ chainId: SEPOLIA_HEX }]
           });
 
-          // Then prompt user to continue to MetaMask (fallback if notifications are off)
-          promptContinueToMetaMaskForSwitchOnce();
-
-          await switchPromise;
-
           log("Switched to Sepolia.");
           hideLoading();
+          hideContinueToMetaMask(); // NEW
           return;
         } catch (e) {
           const code = e && (e.code ?? e?.data?.originalError?.code);
@@ -208,13 +203,11 @@
           log("switch error:", msg);
 
           if (code === 4902) {
+            // NEW: keep continue button visible for approval flow
+            showContinueToMetaMaskOnce();
+
             log("Sepolia not added. Requesting add network...");
-            showLoading("Sepolia not added. Requesting add network...");
-
-            // Fire heads-up notification (if allowed)
-            notifySwitchNeedsApprovalOnce();
-
-            const addPromise = provider.request({
+            await provider.request({
               method: "wallet_addEthereumChain",
               params: [{
                 chainId: SEPOLIA_HEX,
@@ -225,28 +218,15 @@
               }]
             });
 
-            // Prompt user to MetaMask (fallback)
-            promptContinueToMetaMaskForSwitchOnce();
-
-            await addPromise;
-
             log("Network add requested. Now switching to Sepolia...");
-            showLoading("Switching to Sepolia...");
-
-            // Fire heads-up notification again? No, we keep it once-per-attempt only.
-
-            const switch2Promise = provider.request({
+            await provider.request({
               method: "wallet_switchEthereumChain",
               params: [{ chainId: SEPOLIA_HEX }]
             });
 
-            // If user canceled earlier, allow prompt now (still only once)
-            promptContinueToMetaMaskForSwitchOnce();
-
-            await switch2Promise;
-
             log("Switched to Sepolia after adding.");
             hideLoading();
+            hideContinueToMetaMask(); // NEW
             return;
           }
 
@@ -273,18 +253,21 @@
 
       btnConnect.onclick = async () => {
         try {
-          // reset per-attempt state
-          switchHandoffPrompted = false;
-          switchNotifySent = false;
+          // NEW: reset per attempt
+          continueShown = false;
+          hideContinueToMetaMask();
+          hideError();
+          hideRetryMessage();
 
           showLoading("Please wait, connecting and switching to Sepolia...");
 
           await ensureProvider();
 
-          log("Starting connection. Tap 'Open MetaMask' -> approve -> return here.");
+          log("Starting connection. Tap 'Open MetaMask' -> approve.");
 
           await provider.connect();
 
+          // After returning to dapp, start switch flow.
           await ensureSepoliaNetwork();
           retryAttempts = 0;
 
@@ -306,7 +289,12 @@
 
         const target = isAndroid ? schemeLink : universalLink;
         log("Opening MetaMask via:", target);
-        location.href = target;
+        location.href = target; // user-gesture navigation
+      };
+
+      // NEW: user-tap triggers the Chrome "Continue to MetaMask?" system prompt
+      btnContinueMM.onclick = () => {
+        openMetaMaskApp();
       };
 
       btnDisconnect.onclick = async () => {
