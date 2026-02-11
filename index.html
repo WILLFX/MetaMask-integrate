@@ -1,6 +1,7 @@
 <!doctype html>
 <html>
   <body>
+    <!-- NEW: Simple styles for bigger buttons -->
     <style>
       body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; padding: 16px; }
       button {
@@ -12,40 +13,8 @@
         background: #f7f7f7;
       }
       button:disabled { opacity: 0.5; }
-      #log { margin-top: 14px; white-space: pre-wrap; }
+      #log { margin-top: 14px; }
       #loadingMessage, #errorMessage, #retryMessage { margin-top: 10px; }
-
-      /* Popup (modal) */
-      #mmModalBackdrop {
-        display: none;
-        position: fixed;
-        inset: 0;
-        background: rgba(0,0,0,0.45);
-        z-index: 9999;
-        align-items: center;
-        justify-content: center;
-        padding: 16px;
-      }
-      #mmModal {
-        background: #fff;
-        border: 1px solid #ddd;
-        border-radius: 14px;
-        max-width: 520px;
-        width: 100%;
-        padding: 16px;
-        box-shadow: 0 10px 30px rgba(0,0,0,0.25);
-      }
-      #mmModalHeader {
-        display: flex;
-        align-items: center;
-        gap: 10px;
-        margin-bottom: 10px;
-      }
-      #mmModalHeader img { width: 28px; height: 28px; }
-      #mmModalTitle { font-size: 18px; font-weight: 700; }
-      #mmModalBody { margin: 10px 0 14px; font-size: 16px; line-height: 1.35; }
-      #mmModalActions { display: flex; gap: 10px; flex-wrap: wrap; }
-      #mmModalActions button { margin: 0; }
     </style>
 
     <button id="btnConnect">Connect</button>
@@ -56,23 +25,6 @@
     <div id="loadingMessage" style="display:none;">Please wait, connecting and switching to Sepolia...</div>
     <div id="errorMessage" style="display:none; color: red;"></div>
     <div id="retryMessage" style="display:none; color: orange;">Retrying to switch networks...</div>
-
-    <!-- Popup modal -->
-    <div id="mmModalBackdrop">
-      <div id="mmModal" role="dialog" aria-modal="true">
-        <div id="mmModalHeader">
-          <img src="https://metamask.io/images/favicon-32.png" alt="MetaMask">
-          <div id="mmModalTitle">Continue in MetaMask</div>
-        </div>
-        <div id="mmModalBody">
-          We need MetaMask to approve switching to Sepolia. Tap Continue to open MetaMask and approve the prompt.
-        </div>
-        <div id="mmModalActions">
-          <button id="mmModalContinue">Continue to MetaMask</button>
-          <button id="mmModalCancel">Not now</button>
-        </div>
-      </div>
-    </div>
 
     <!-- WalletConnect v2 EthereumProvider (UMD build, no bundler) -->
     <script src="https://unpkg.com/@walletconnect/ethereum-provider@2.23.3/dist/index.umd.js"></script>
@@ -86,13 +38,7 @@
       const errorMessage = document.getElementById("errorMessage");
       const retryMessage = document.getElementById("retryMessage");
 
-      const mmModalBackdrop = document.getElementById("mmModalBackdrop");
-      const mmModalContinue = document.getElementById("mmModalContinue");
-      const mmModalCancel = document.getElementById("mmModalCancel");
-      const mmModalBody = document.getElementById("mmModalBody");
-
       let retryAttempts = 0;
-      let connecting = false; // single-flight connect guard
 
       function log(...args) {
         logEl.textContent += args.map(String).join(" ") + "\n";
@@ -124,27 +70,10 @@
         retryMessage.style.display = "none";
       }
 
-      function showMMModal(message) {
-        mmModalBody.textContent = message;
-        mmModalBackdrop.style.display = "flex";
-      }
-
-      function hideMMModal() {
-        mmModalBackdrop.style.display = "none";
-      }
-
       // ---- CONFIG ----
-      const projectId = "19acc37cc9d91b4b39b0cca952297654";
-
-      // Relay fallback list (codebase-level mitigation)
-      const RELAYS = [
-        "wss://relay.walletconnect.com",
-        "wss://relay.walletconnect.org"
-      ];
-      let relayIdx = 0;
-
+      const projectId = "19acc37cc9d91b4b39b0cca952297654"; // Replace with your WalletConnect project ID
       const SEPOLIA = 11155111;
-      const SEPOLIA_HEX = "0xaa36a7";
+      const SEPOLIA_HEX = "0xaa36a7"; // 11155111
       const SEPOLIA_RPC_PRIMARY = "https://rpc.sepolia.org";
       const SEPOLIA_RPC_SECONDARY = "https://rpc2.sepolia.org";
       const SEPOLIA_EXPLORER = "https://sepolia.etherscan.io";
@@ -153,10 +82,12 @@
       let provider = null;
       let wcUri = null;
 
-      // Notification control so we only ping once per connect attempt
+      // NEW: Notification control so we only ping once per connect attempt
       let switchNotifySent = false;
 
+      // NEW: Chrome-style notification helpers (Web Notifications)
       async function ensureNotificationPermissionIfNeeded() {
+        // Only ask once, and only on a user gesture (Connect click)
         if (!("Notification" in window)) return false;
         if (Notification.permission === "granted") return true;
         if (Notification.permission === "denied") return false;
@@ -181,26 +112,9 @@
             body: "Approve the Sepolia network switch/add in MetaMask.",
             icon: "https://metamask.io/images/favicon-32.png"
           });
-        } catch (_) {}
-      }
-
-      function isRelayishError(e) {
-        const msg = (e && (e.message || String(e))) || "";
-        return (
-          msg.includes("relay") ||
-          msg.includes("socket connection") ||
-          msg.includes("ERR_NAME_NOT_RESOLVED") ||
-          msg.includes("Couldn't establish socket") ||
-          msg.includes("Failed to fetch")
-        );
-      }
-
-      async function teardownProvider() {
-        try { await provider?.disconnect?.(); } catch (_) {}
-        provider = null;
-        wcUri = null;
-        btnOpenMM.disabled = true;
-        btnDisconnect.disabled = true;
+        } catch (_) {
+          // Some Android builds can throw if notifications aren’t available; ignore silently.
+        }
       }
 
       async function ensureProvider() {
@@ -209,11 +123,10 @@
         const WC = window["@walletconnect/ethereum-provider"];
         if (!WC?.EthereumProvider) throw new Error("WalletConnect EthereumProvider not loaded");
 
-        const relayUrl = RELAYS[relayIdx];
-
         provider = await WC.EthereumProvider.init({
           projectId,
-          relayUrl,            // IMPORTANT: forced relay hostname
+          // NEW: force relay hostname to reduce DNS/WS flakiness on some networks
+          relayUrl: "wss://relay.walletconnect.com",
           showQrModal: false,
           metadata: {
             name: "Bare WC Demo",
@@ -252,29 +165,11 @@
           log("chainChanged:", String(chainId));
         });
 
-        log("Using relay:", relayUrl);
         return provider;
       }
 
-      // unchanged: open metamask via WC uri (pairing deeplink)
-      function openMetaMaskViaWcUri() {
-        if (!wcUri) {
-          log("No wcUri available. If MetaMask is not open, please open it manually.");
-          return;
-        }
-
-        const uri = encodeURIComponent(wcUri);
-        const isAndroid = /Android/i.test(navigator.userAgent);
-
-        const schemeLink = `metamask://wc?uri=${uri}`;
-        const universalLink = `https://metamask.app.link/wc?uri=${uri}`;
-        const target = isAndroid ? schemeLink : universalLink;
-
-        log("Opening MetaMask via:", target);
-        location.href = target;
-      }
-
       async function ensureSepoliaNetwork() {
+        // Check current chain
         const currentHex = await provider.request({ method: "eth_chainId" });
         log("current chainId:", currentHex);
 
@@ -283,8 +178,11 @@
           return;
         }
 
+        // Try switch first
         try {
+          // NEW: notify user that MetaMask approval is needed (only once)
           notifySwitchNeedsApprovalOnce();
+
           showLoading("Requesting switch to Sepolia...");
 
           await provider.request({
@@ -298,12 +196,15 @@
         } catch (e) {
           const code = e && (e.code ?? e?.data?.originalError?.code);
           const msg = e && (e.message || String(e));
+
           log("switch error:", msg);
 
+          // 4902 = chain not added (common MetaMask behavior)
           if (code === 4902) {
+            // NEW: still part of switching flow, keep the same single notification
             notifySwitchNeedsApprovalOnce();
-            log("Sepolia not added. Requesting add network...");
 
+            log("Sepolia not added. Requesting add network...");
             await provider.request({
               method: "wallet_addEthereumChain",
               params: [{
@@ -326,6 +227,7 @@
             return;
           }
 
+          // Not a "not added" error: user rejected or wallet limitation
           showError("Error: Unable to switch to Sepolia. Please approve the switch/add in MetaMask.");
           hideLoading();
           throw e;
@@ -336,97 +238,61 @@
         retryAttempts++;
         log(`Retry attempt ${retryAttempts} of 3`);
         if (retryAttempts <= 3) {
-          showRetryMessage();
+          showRetryMessage(); // Show retry message
           setTimeout(async () => {
-            try {
-              await ensureSepoliaNetwork();
-            } catch (_) {}
-          }, 2000);
+            await ensureSepoliaNetwork();
+          }, 2000); // Retry after 2 seconds
         } else {
           log("Max retry attempts reached. Please try again later.");
           showError("Failed to switch to Sepolia after multiple attempts.");
-          hideRetryMessage();
-        }
-      }
-
-      // Relay fallback connect: try current relay; if relay error, flip once to the other relay and retry connect
-      async function connectWithRelayFallback() {
-        await ensureProvider();
-        try {
-          await provider.connect();
-          return;
-        } catch (e) {
-          if (!isRelayishError(e)) throw e;
-
-          log("Relay seems unreachable. Trying fallback relay...");
-          await teardownProvider();
-
-          relayIdx = (relayIdx + 1) % RELAYS.length;
-
-          await ensureProvider();
-          await provider.connect();
+          hideRetryMessage(); // Hide retry message
         }
       }
 
       btnConnect.onclick = async () => {
-        if (connecting) return; // guard
-        connecting = true;
-
-        btnConnect.disabled = true;
-        hideError();
-        hideRetryMessage();
-        retryAttempts = 0;
-
         try {
+          // NEW: reset per-attempt state
           switchNotifySent = false;
+
+          // NEW: request notification permission (only on click, and only once)
+          // If user denies, we just won't show the popup later.
           await ensureNotificationPermissionIfNeeded();
 
-          showLoading("Please wait, connecting...");
-          log("Starting connection. Tap 'Open MetaMask' -> approve.");
+          showLoading("Please wait, connecting and switching to Sepolia...");
 
-          await connectWithRelayFallback();
+          await ensureProvider();
 
-          hideLoading();
+          log("Starting connection. Tap 'Open MetaMask' -> approve -> stay in MetaMask.");
+
+          // Triggers display_uri; resolves after wallet approval
+          await provider.connect();
+
+          // After returning to dapp, we start the switch flow; notification will fire here.
+          await ensureSepoliaNetwork();
+          retryAttempts = 0; // Reset retry attempts after successful switch
+
           btnDisconnect.disabled = false;
-
-          // SHOW POPUP ONLY FOR CHAIN SWITCHING
-          showMMModal("To finish setup, we need MetaMask to approve switching to Sepolia. Tap Continue to open MetaMask and approve the prompt.");
-
-          // Continue button: send switch request, then open MetaMask immediately (user gesture)
-          mmModalContinue.onclick = async () => {
-            hideMMModal();
-
-            try {
-              // Start switch request, then immediately open MetaMask so user sees the prompt there.
-              const p = ensureSepoliaNetwork();
-              // Tiny delay so the request is dispatched before navigation.
-              setTimeout(() => openMetaMaskViaWcUri(), 50);
-              await p;
-              retryAttempts = 0;
-            } catch (e) {
-              log("connect/switch error:", e?.message || e);
-              retrySwitch();
-            }
-          };
-
-          mmModalCancel.onclick = () => {
-            hideMMModal();
-            log("User skipped Sepolia switch for now.");
-            hideLoading();
-          };
-
         } catch (e) {
-          hideLoading();
           log("connect error:", e?.message || e);
-          showError(String(e?.message || e));
-        } finally {
-          btnConnect.disabled = false;
-          connecting = false;
+          retrySwitch(); // Retry if the chain switch failed
         }
       };
 
       btnOpenMM.onclick = () => {
-        openMetaMaskViaWcUri();
+        if (!wcUri) return;
+
+        const uri = encodeURIComponent(wcUri);
+        const isAndroid = /Android/i.test(navigator.userAgent);
+
+        // Android: scheme often preserves wc params better.
+        const schemeLink = `metamask://wc?uri=${uri}`;
+
+        // Non-Android fallback
+        const universalLink = `https://metamask.app.link/wc?uri=${uri}`;
+
+        const target = isAndroid ? schemeLink : universalLink;
+        log("Opening MetaMask via:", target);
+        location.href = target; // user-gesture navigation
       };
 
       btnDisconnect.onclick = async () => {
@@ -437,9 +303,11 @@
           log("disconnect error:", e?.message || e);
         }
       };
+
     </script>
   </body>
 </html>
+
 
 
 
