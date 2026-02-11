@@ -1,7 +1,7 @@
 <!doctype html>
 <html>
   <body>
-   
+    <!-- Simple styles for bigger buttons -->
     <style>
       body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; padding: 16px; }
       button {
@@ -82,14 +82,34 @@
       let provider = null;
       let wcUri = null;
 
-      // NEW: only prompt "Continue to MetaMask" once per connect attempt
+      
       let switchHandoffPrompted = false;
 
-      // NEW: trigger the Chrome/Android app-handoff prompt (user gesture required)
+     
+      let switchNotifySent = false;
+
+      
+      function notifySwitchNeedsApprovalOnce() {
+        if (switchNotifySent) return;
+        switchNotifySent = true;
+
+        if (!("Notification" in window)) return;
+        if (Notification.permission !== "granted") return;
+
+        try {
+          new Notification("MetaMask approval needed", {
+            body: "Approve the Sepolia network switch/add in MetaMask.",
+            icon: "https://metamask.io/images/favicon-32.png"
+          });
+        } catch (_) {
+          
+        }
+      }
+
+     
       function promptContinueToMetaMaskForSwitchOnce() {
         if (switchHandoffPrompted) return;
 
-       
         const ok = confirm("Continue to MetaMask to approve the Sepolia network switch/add?");
         if (!ok) return;
 
@@ -161,17 +181,19 @@
           return;
         }
 
-        // Try switch first
         try {
           showLoading("Requesting switch to Sepolia...");
 
           
+          notifySwitchNeedsApprovalOnce();
+
+         
           const switchPromise = provider.request({
             method: "wallet_switchEthereumChain",
             params: [{ chainId: SEPOLIA_HEX }]
           });
 
-          // NEW: system handoff prompt to MetaMask for the approval step
+          // Then prompt user to continue to MetaMask (fallback if notifications are off)
           promptContinueToMetaMaskForSwitchOnce();
 
           await switchPromise;
@@ -189,6 +211,9 @@
             log("Sepolia not added. Requesting add network...");
             showLoading("Sepolia not added. Requesting add network...");
 
+            // Fire heads-up notification (if allowed)
+            notifySwitchNeedsApprovalOnce();
+
             const addPromise = provider.request({
               method: "wallet_addEthereumChain",
               params: [{
@@ -200,7 +225,7 @@
               }]
             });
 
-            // NEW: same handoff prompt (only once per attempt)
+            // Prompt user to MetaMask (fallback)
             promptContinueToMetaMaskForSwitchOnce();
 
             await addPromise;
@@ -208,12 +233,14 @@
             log("Network add requested. Now switching to Sepolia...");
             showLoading("Switching to Sepolia...");
 
+            // Fire heads-up notification again? No, we keep it once-per-attempt only.
+
             const switch2Promise = provider.request({
               method: "wallet_switchEthereumChain",
               params: [{ chainId: SEPOLIA_HEX }]
             });
 
-            // If the user canceled earlier, prompt can still show here
+            // If user canceled earlier, allow prompt now (still only once)
             promptContinueToMetaMaskForSwitchOnce();
 
             await switch2Promise;
@@ -248,14 +275,14 @@
         try {
           // reset per-attempt state
           switchHandoffPrompted = false;
+          switchNotifySent = false;
 
           showLoading("Please wait, connecting and switching to Sepolia...");
 
           await ensureProvider();
 
-          log("Starting connection. Tap 'Open MetaMask' -> approve -> stay in MetaMask.");
+          log("Starting connection. Tap 'Open MetaMask' -> approve -> return here.");
 
-          // Triggers display_uri; resolves after wallet approval
           await provider.connect();
 
           await ensureSepoliaNetwork();
@@ -293,6 +320,7 @@
     </script>
   </body>
 </html>
+
 
 
 
