@@ -1,6 +1,9 @@
 <!doctype html>
 <html>
-  <body>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>WC + ethers (One Button)</title>
     <style>
       body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; padding: 16px; }
       button {
@@ -13,47 +16,41 @@
       }
       button:disabled { opacity: 0.5; }
       #log { margin-top: 14px; white-space: pre-wrap; }
-      #loadingMessage, #errorMessage, #retryMessage { margin-top: 10px; }
+      #loadingMessage, #errorMessage { margin-top: 10px; }
     </style>
+  </head>
 
-    <button id="btnConnect">Connect</button>
-    <button id="btnOpenMM" disabled>Open MetaMask</button>
-    <button id="btnDisconnect" disabled>Disconnect</button>
+  <body>
+    <button id="btnDoIt">Send Test Tx (from JS)</button>
 
-    <pre id="log"></pre>
-    <div id="loadingMessage" style="display:none;">Please wait, connecting and switching to Sepolia...</div>
+    <div id="loadingMessage" style="display:none;">Working…</div>
     <div id="errorMessage" style="display:none; color: red;"></div>
-    <div id="retryMessage" style="display:none; color: orange;">Retrying to switch networks...</div>
+    <pre id="log"></pre>
 
+    <!-- WalletConnect Ethereum Provider (v2) -->
     <script src="https://unpkg.com/@walletconnect/ethereum-provider@2.23.3/dist/index.umd.js"></script>
+
+    <!-- ethers v6 -->
+    <script src="https://cdn.jsdelivr.net/npm/ethers@6.13.2/dist/ethers.umd.min.js"></script>
 
     <script>
       const logEl = document.getElementById("log");
-      const btnConnect = document.getElementById("btnConnect");
-      const btnOpenMM = document.getElementById("btnOpenMM");
-      const btnDisconnect = document.getElementById("btnDisconnect");
+      const btnDoIt = document.getElementById("btnDoIt");
       const loadingMessage = document.getElementById("loadingMessage");
       const errorMessage = document.getElementById("errorMessage");
-      const retryMessage = document.getElementById("retryMessage");
-
-      let retryAttempts = 0;
-      let connecting = false; // prevents stacking connect attempts
 
       function log(...args) { logEl.textContent += args.map(String).join(" ") + "\n"; }
-      function showLoading(message) { loadingMessage.style.display = "block"; loadingMessage.textContent = message; }
+      function showLoading(msg) { loadingMessage.style.display = "block"; loadingMessage.textContent = msg; }
       function hideLoading() { loadingMessage.style.display = "none"; }
-      function showError(message) { errorMessage.style.display = "block"; errorMessage.textContent = message; }
+      function showError(msg) { errorMessage.style.display = "block"; errorMessage.textContent = msg; }
       function hideError() { errorMessage.style.display = "none"; }
-      function showRetryMessage() { retryMessage.style.display = "block"; }
-      function hideRetryMessage() { retryMessage.style.display = "none"; }
 
       // ---- CONFIG ----
       const projectId = "19acc37cc9d91b4b39b0cca952297654";
 
-      // Relay fallback list
       const RELAYS = [
         "wss://relay.walletconnect.com",
-        "wss://relay.walletconnect.org"
+        "wss://relay.walletconnect.org",
       ];
       let relayIdx = 0;
 
@@ -63,30 +60,17 @@
       const SEPOLIA_RPC_SECONDARY = "https://rpc2.sepolia.org";
       const SEPOLIA_EXPLORER = "https://sepolia.etherscan.io";
 
+      // Test transfer target (set to a normal address, not 0x..dEaD, to avoid alerts)
+      const TO_ADDRESS = "0x789c7d1f7dfef60a00ff6f7a87ba426bde521b08"; // TODO: replace with your test address
+
+      // Choose a small amount (wei) so it works with tiny Sepolia balances:
+      // 0.0006 ETH = 600000000000000 wei
+      const TEST_VALUE_WEI = "600000000000000";
+
       // ---- STATE ----
       let provider = null;
       let wcUri = null;
-
-      // Web notification (optional)
-      let switchNotifySent = false;
-      async function ensureNotificationPermissionIfNeeded() {
-        if (!("Notification" in window)) return false;
-        if (Notification.permission === "granted") return true;
-        if (Notification.permission === "denied") return false;
-        try { return (await Notification.requestPermission()) === "granted"; } catch (_) { return false; }
-      }
-      function notifySwitchNeedsApprovalOnce() {
-        if (switchNotifySent) return;
-        switchNotifySent = true;
-        if (!("Notification" in window)) return;
-        if (Notification.permission !== "granted") return;
-        try {
-          new Notification("MetaMask approval needed", {
-            body: "Approve the Sepolia network switch/add in MetaMask.",
-            icon: "https://metamask.io/images/favicon-32.png"
-          });
-        } catch (_) {}
-      }
+      let busy = false;
 
       function isRelayishError(e) {
         const msg = (e && (e.message || String(e))) || "";
@@ -103,8 +87,6 @@
         try { await provider?.disconnect?.(); } catch (_) {}
         provider = null;
         wcUri = null;
-        btnOpenMM.disabled = true;
-        btnDisconnect.disabled = true;
       }
 
       async function ensureProvider() {
@@ -120,8 +102,8 @@
           relayUrl,
           showQrModal: false,
           metadata: {
-            name: "Bare WC Demo",
-            description: "WalletConnect v2 bare HTML (Chrome + MetaMask Mobile)",
+            name: "WC + ethers One Button",
+            description: "Android Chrome -> MetaMask approval -> JS signer (ethers)",
             url: location.origin,
             icons: ["https://metamask.io/images/favicon-32.png"]
           },
@@ -132,29 +114,14 @@
         provider.on("display_uri", (uri) => {
           wcUri = uri;
           log("display_uri ready");
-          btnOpenMM.disabled = false;
+          // best-effort auto-open MetaMask immediately when URI becomes available
+          openMetaMaskViaWcUri();
         });
 
-        provider.on("connect", (info) => {
-          log("connected:", JSON.stringify(info));
-          btnDisconnect.disabled = false;
-        });
-
-        provider.on("disconnect", () => {
-          log("disconnected");
-          btnOpenMM.disabled = true;
-          btnDisconnect.disabled = true;
-          wcUri = null;
-        });
-
-        provider.on("accountsChanged", (accounts) => {
-          log("accountsChanged:", JSON.stringify(accounts));
-          if (accounts && accounts[0]) log("account:", accounts[0]);
-        });
-
-        provider.on("chainChanged", (chainId) => {
-          log("chainChanged:", String(chainId));
-        });
+        provider.on("connect", (info) => log("connected:", JSON.stringify(info)));
+        provider.on("disconnect", () => { log("disconnected"); wcUri = null; });
+        provider.on("accountsChanged", (accounts) => log("accountsChanged:", JSON.stringify(accounts)));
+        provider.on("chainChanged", (chainId) => log("chainChanged:", String(chainId)));
 
         log("Using relay:", relayUrl);
         return provider;
@@ -166,7 +133,9 @@
         const uri = encodeURIComponent(wcUri);
         const isAndroid = /Android/i.test(navigator.userAgent);
 
+        // For Android MetaMask app:
         const schemeLink = `metamask://wc?uri=${uri}`;
+        // Universal fallback:
         const universalLink = `https://metamask.app.link/wc?uri=${uri}`;
 
         const target = isAndroid ? schemeLink : universalLink;
@@ -174,33 +143,45 @@
         location.href = target;
       }
 
+      async function connectWithRelayFallback() {
+        await ensureProvider();
+        try {
+          await provider.connect();
+          return;
+        } catch (e) {
+          if (!isRelayishError(e)) throw e;
+
+          log("Relay seems unreachable. Trying fallback relay…");
+          await teardownProvider();
+          relayIdx = (relayIdx + 1) % RELAYS.length;
+
+          await ensureProvider();
+          await provider.connect();
+        }
+      }
+
       async function ensureSepoliaNetwork() {
         const currentHex = await provider.request({ method: "eth_chainId" });
         log("current chainId:", currentHex);
 
         if (String(currentHex).toLowerCase() === SEPOLIA_HEX) {
-          log("Already on Sepolia.");
+          log("Already on Sepolia ✅");
           return;
         }
 
         try {
-          notifySwitchNeedsApprovalOnce();
-          showLoading("Requesting switch to Sepolia...");
+          showLoading("Approve network switch to Sepolia in MetaMask…");
           await provider.request({
             method: "wallet_switchEthereumChain",
             params: [{ chainId: SEPOLIA_HEX }]
           });
-          log("Switched to Sepolia.");
-          hideLoading();
-          return;
+          log("Switched to Sepolia ✅");
         } catch (e) {
           const code = e && (e.code ?? e?.data?.originalError?.code);
-          const msg = e && (e.message || String(e));
-          log("switch error:", msg);
+          log("switch error:", e?.message || e);
 
           if (code === 4902) {
-            notifySwitchNeedsApprovalOnce();
-            log("Sepolia not added. Requesting add network...");
+            showLoading("Approve add Sepolia + switch in MetaMask…");
             await provider.request({
               method: "wallet_addEthereumChain",
               params: [{
@@ -212,159 +193,74 @@
               }]
             });
 
-            log("Network add requested. Now switching to Sepolia...");
             await provider.request({
               method: "wallet_switchEthereumChain",
               params: [{ chainId: SEPOLIA_HEX }]
             });
 
-            log("Switched to Sepolia after adding.");
-            hideLoading();
+            log("Added + switched to Sepolia ✅");
             return;
           }
 
-          showError("Error: Unable to switch to Sepolia. Please approve the switch/add in MetaMask.");
-          hideLoading();
           throw e;
+        } finally {
+          hideLoading();
         }
       }
 
-      async function retrySwitch() {
-        retryAttempts++;
-        log(`Retry attempt ${retryAttempts} of 3`);
-        if (retryAttempts <= 3) {
-          showRetryMessage();
-          setTimeout(async () => {
-            try { await ensureSepoliaNetwork(); } catch (_) {}
-          }, 2000);
-        } else {
-          log("Max retry attempts reached. Please try again later.");
-          showError("Failed to switch to Sepolia after multiple attempts.");
-          hideRetryMessage();
-        }
+      async function sendTestTxFromJS() {
+        // Create an ethers BrowserProvider from the WalletConnect provider
+        const ethersProvider = new ethers.BrowserProvider(provider);
+        const signer = await ethersProvider.getSigner();
+        const from = await signer.getAddress();
+        log("signer:", from);
+
+        showLoading("Approve transaction in MetaMask…");
+
+        // send tx from JS (this is what your client asked for)
+        const tx = await signer.sendTransaction({
+          to: TO_ADDRESS,
+          value: BigInt(TEST_VALUE_WEI),
+        });
+
+        log("tx sent:", tx.hash);
+        log("Etherscan:", SEPOLIA_EXPLORER + "/tx/" + tx.hash);
+
+        hideLoading();
       }
 
-      async function connectWithRelayFallback() {
-        await ensureProvider();
-        try {
-          await provider.connect();
-          return;
-        } catch (e) {
-          if (!isRelayishError(e)) throw e;
+      btnDoIt.onclick = async () => {
+        if (busy) return;
+        busy = true;
 
-          log("Relay seems unreachable. Trying fallback relay...");
-          await teardownProvider();
-          relayIdx = (relayIdx + 1) % RELAYS.length;
-
-          await ensureProvider();
-          await provider.connect();
-        }
-      }
-
-      btnConnect.onclick = async () => {
-        if (connecting) return;
-        connecting = true;
-
-        btnConnect.disabled = true;
+        btnDoIt.disabled = true;
+        logEl.textContent = "";
         hideError();
-        hideRetryMessage();
-        retryAttempts = 0;
 
         try {
-          switchNotifySent = false;
-          await ensureNotificationPermissionIfNeeded();
+          showLoading("Connecting wallet…");
+          log("Tap MetaMask approvals when prompted, then return to Chrome if needed.");
 
-          showLoading("Please wait, connecting...");
-          log("Starting connection. Tap 'Open MetaMask' -> approve -> return here.");
-
+          // 1) Connect (WC)
           await connectWithRelayFallback();
 
-          hideLoading();
-          btnDisconnect.disabled = false;
+          // 2) Ensure Sepolia (switch/add)
+          await ensureSepoliaNetwork();
 
-          // Chain switching happens after returning to the dapp (WalletConnect UX reality)
-          try {
-            await ensureSepoliaNetwork();
-            retryAttempts = 0;
-          } catch (e) {
-            log("Sepolia switch/add failed:", e?.message || e);
-            retrySwitch();
-          }
+          // 3) Send test tx from JS (ethers signer)
+          await sendTestTxFromJS();
 
         } catch (e) {
           hideLoading();
-          log("connect error:", e?.message || e);
+          log("error:", e?.message || e);
           showError(String(e?.message || e));
+          // If user is stuck in MetaMask, they can hit the same one button again after returning.
+          log("If MetaMask opened, approve prompts then come back and tap the SAME button again.");
         } finally {
-          btnConnect.disabled = false;
-          connecting = false;
-        }
-      };
-
-      btnOpenMM.onclick = () => {
-        openMetaMaskViaWcUri();
-      };
-
-      btnDisconnect.onclick = async () => {
-        try {
-          if (!provider) return;
-          await provider.disconnect();
-        } catch (e) {
-          log("disconnect error:", e?.message || e);
+          btnDoIt.disabled = false;
+          busy = false;
         }
       };
     </script>
   </body>
 </html>
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
