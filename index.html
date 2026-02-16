@@ -58,9 +58,16 @@
     let connectInFlight = false;
     let openedMmThisAttempt = false;
 
-    // live "last known" values from events (more reliable than immediate request() on Android)
     let lastAccounts = [];
-    let lastChainId = null; // string like "0xaa36a7"
+    let lastChainId = null;
+
+    function normalizeChainIdToHex(chainId) {
+      if (typeof chainId === "number") return ("0x" + chainId.toString(16)).toLowerCase();
+      const s = String(chainId).trim().toLowerCase();
+      if (s.startsWith("0x")) return s;
+      if (/^\d+$/.test(s)) return ("0x" + Number(s).toString(16)).toLowerCase();
+      return s;
+    }
 
     function isRelayishError(e) {
       const msg = String((e && (e.message ?? e)) ?? "");
@@ -114,7 +121,6 @@
           url: location.origin,
           icons: ["https://metamask.io/images/favicon-32.png"],
         },
-        // Ask for Sepolia in session
         chains: [SEPOLIA],
         optionalChains: [SEPOLIA],
         rpcMap: { [SEPOLIA]: SEPOLIA_RPC_PRIMARY },
@@ -143,7 +149,7 @@
       });
 
       provider.on("chainChanged", (chainId) => {
-        lastChainId = String(chainId).toLowerCase();
+        lastChainId = normalizeChainIdToHex(chainId);
         log("chainChanged:", lastChainId);
       });
 
@@ -151,22 +157,19 @@
       return provider;
     }
 
-    // Small helper: wait for a condition with polling
     async function waitFor(fn, { timeoutMs = 90000, intervalMs = 400, label = "condition" } = {}) {
       const start = Date.now();
       while (Date.now() - start < timeoutMs) {
-        try {
-          if (await fn()) return true;
-        } catch (_) {}
+        try { if (await fn()) return true; } catch (_) {}
         await new Promise(r => setTimeout(r, intervalMs));
       }
       throw new Error(`Timed out waiting for ${label} (${Math.round(timeoutMs/1000)}s).`);
     }
 
+    // Your protocol: always disconnect existing session first
     async function connectWithRelayFallback() {
       await ensureProvider();
 
-      // You still want "fresh": disconnect existing session first
       if (provider?.session) {
         log("Existing WC session found. Disconnecting to avoid stale account/session…");
         try { await provider.disconnect(); } catch (_) {}
@@ -194,28 +197,21 @@
       }
     }
 
+    // ✅ The actual fix: do NOT trust events; only trust eth_chainId
     async function ensureSepoliaNetwork() {
-      // On Android, immediate eth_chainId can lag. Prefer event state, but still verify.
       showLoading("Ensuring Sepolia…");
 
-      // First, if events already show Sepolia, accept it quickly.
-      if (lastChainId === SEPOLIA_HEX) {
-        log("Already on Sepolia ✅ (from event)");
-        hideLoading();
-        return;
-      }
+      const readChain = async () => normalizeChainIdToHex(await provider.request({ method: "eth_chainId" }));
 
-      // Ask provider what it thinks (may be stale)
-      const currentHex = String(await provider.request({ method: "eth_chainId" })).toLowerCase();
-      log("current chainId:", currentHex);
+      let current = await readChain();
+      log("current chainId:", current);
 
-      if (currentHex === SEPOLIA_HEX) {
+      if (current === SEPOLIA_HEX) {
         log("Already on Sepolia ✅");
         hideLoading();
         return;
       }
 
-      // Request switch
       showLoading("Approve network switch to Sepolia in MetaMask…");
       try {
         await provider.request({
@@ -238,34 +234,33 @@
               blockExplorerUrls: [SEPOLIA_EXPLORER],
             }],
           });
+
           await provider.request({
             method: "wallet_switchEthereumChain",
             params: [{ chainId: SEPOLIA_HEX }],
           });
+
           log("Added + switched requested ✅");
         } else {
           throw e;
         }
       }
 
-      // ✅ Wait until chain actually settles to Sepolia
       showLoading("Waiting for Sepolia to settle…");
-      await waitFor(async () => {
-        if (lastChainId === SEPOLIA_HEX) return true;
-        const c = String(await provider.request({ method: "eth_chainId" })).toLowerCase();
-        return c === SEPOLIA_HEX;
-      }, { timeoutMs: 90000, intervalMs: 500, label: "Sepolia chainId" });
+      await waitFor(async () => (await readChain()) === SEPOLIA_HEX, {
+        timeoutMs: 90000,
+        intervalMs: 500,
+        label: "Sepolia chainId via eth_chainId"
+      });
 
       log("Switched to Sepolia ✅");
       hideLoading();
     }
 
     async function getAuthorizedAccount() {
-      // Try fast path
       const a0 = Array.isArray(lastAccounts) && lastAccounts[0] ? lastAccounts[0] : null;
       if (a0) return a0;
 
-      // Ask MetaMask to authorize (can return [] immediately on Android)
       try {
         const req = await provider.request({ method: "eth_requestAccounts" });
         if (Array.isArray(req) && req[0]) return req[0];
@@ -273,7 +268,6 @@
         log("eth_requestAccounts error:", e?.message || e);
       }
 
-      // ✅ Wait for accountsChanged to deliver the account
       showLoading("Waiting for MetaMask account approval…");
       await waitFor(async () => {
         const a = Array.isArray(lastAccounts) && lastAccounts[0] ? lastAccounts[0] : null;
@@ -290,6 +284,14 @@
     async function sendTestTxFromJS() {
       const account = await getAuthorizedAccount();
 
+      // ✅ HARD STOP: if we are not on Sepolia, we do NOT attempt a tx
+      const chainNow = normalizeChainIdToHex(await provider.request({ method: "eth_chainId" }));
+      log("chainId (pre-tx):", chainNow);
+
+      if (chainNow !== SEPOLIA_HEX) {
+        throw new Error(`Not on Sepolia (chainId=${chainNow}). Not sending from Mainnet. Approve the Sepolia switch in MetaMask, then tap the button again.`);
+      }
+
       const ethersProvider = new ethers.BrowserProvider(provider);
       const signer = await ethersProvider.getSigner(account);
 
@@ -297,22 +299,17 @@
       log("to:", TO_ADDRESS);
       log("valueWei:", TEST_VALUE_WEI);
 
-      // ---------------- TEST: force fresh reads (chain + balances) ----------------
-      const chainNow = String(await provider.request({ method: "eth_chainId" })).toLowerCase();
-      log("chainId (pre-tx):", chainNow);
-
-      // Raw RPC balance
+      // --- Your balance test (kept) ---
       const balHex = await provider.request({ method: "eth_getBalance", params: [account, "latest"] });
       const balWeiRpc = BigInt(balHex);
       log("balanceHex (eth_getBalance):", balHex);
       log("balanceWei (eth_getBalance):", balWeiRpc.toString());
       log("balanceETH (eth_getBalance):", ethers.formatEther(balWeiRpc));
 
-      // Ethers balance (same provider, different path)
       const balWeiEthers = await ethersProvider.getBalance(account);
       log("balanceWei (ethers.getBalance):", balWeiEthers.toString());
       log("balanceETH (ethers.getBalance):", ethers.formatEther(balWeiEthers));
-      // --------------------------------------------------------------------------
+      // -------------------------------
 
       showLoading("Approve transaction in MetaMask…");
       const tx = await signer.sendTransaction({
@@ -338,7 +335,10 @@
         log("Tap MetaMask approvals when prompted, then return to Chrome if needed.");
 
         await connectWithRelayFallback();
+
+        // ✅ must be confirmed Sepolia via eth_chainId before sending
         await ensureSepoliaNetwork();
+
         await sendTestTxFromJS();
 
       } catch (e) {
