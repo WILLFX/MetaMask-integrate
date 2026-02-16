@@ -6,13 +6,7 @@
   <title>WC + ethers (One Button)</title>
   <style>
     body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; padding: 16px; }
-    button {
-      font-size: 18px;
-      padding: 14px 18px;
-      border-radius: 10px;
-      border: 1px solid #bbb;
-      background: #f7f7f7;
-    }
+    button { font-size: 18px; padding: 14px 18px; border-radius: 10px; border: 1px solid #bbb; background: #f7f7f7; }
     button:disabled { opacity: 0.5; }
     #log { margin-top: 14px; white-space: pre-wrap; }
     #loadingMessage, #errorMessage { margin-top: 10px; }
@@ -21,7 +15,6 @@
 
 <body>
   <button id="btnDoIt">Send Test Tx (from JS)</button>
-
   <div id="loadingMessage" style="display:none;">Working…</div>
   <div id="errorMessage" style="display:none; color: red;"></div>
   <pre id="log"></pre>
@@ -45,10 +38,7 @@
     // ---------------- CONFIG ----------------
     const projectId = "19acc37cc9d91b4b39b0cca952297654";
 
-    const RELAYS = [
-      "wss://relay.walletconnect.com",
-      "wss://relay.walletconnect.org",
-    ];
+    const RELAYS = ["wss://relay.walletconnect.com", "wss://relay.walletconnect.org"];
     let relayIdx = 0;
 
     const SEPOLIA = 11155111;
@@ -57,10 +47,8 @@
     const SEPOLIA_RPC_SECONDARY = "https://rpc2.sepolia.org";
     const SEPOLIA_EXPLORER = "https://sepolia.etherscan.io";
 
-    // Recipient (Account 1)
     const TO_ADDRESS = "0x789c7d1f7dfef60a00ff6f7a87ba426bde521b08";
-    // 0.0006 ETH in wei
-    const TEST_VALUE_WEI = "600000000000000";
+    const TEST_VALUE_WEI = "600000000000000"; // 0.0006
 
     // ---------------- STATE ----------------
     let provider = null;
@@ -68,12 +56,13 @@
 
     let busy = false;
     let connectInFlight = false;
-
-    // ✅ single-open guard (replaces openAttempts/second nudge)
     let openedMmThisAttempt = false;
 
+    // live "last known" values from events (more reliable than immediate request() on Android)
+    let lastAccounts = [];
+    let lastChainId = null; // string like "0xaa36a7"
+
     function isRelayishError(e) {
-      // ultra-safe stringify to avoid any `.includes` crash
       const msg = String((e && (e.message ?? e)) ?? "");
       return (
         msg.includes("relay") ||
@@ -84,28 +73,9 @@
       );
     }
 
-    function clearWalletConnectStorage() {
-      for (const k of Object.keys(localStorage)) {
-        const kl = k.toLowerCase();
-        if (k.startsWith("wc@") || kl.includes("walletconnect")) localStorage.removeItem(k);
-      }
-      for (const k of Object.keys(sessionStorage)) {
-        const kl = k.toLowerCase();
-        if (k.startsWith("wc@") || kl.includes("walletconnect")) sessionStorage.removeItem(k);
-      }
-    }
-
-    async function teardownProvider() {
-      try { await provider?.disconnect?.(); } catch (_) {}
-      provider = null;
-      wcUri = null;
-      connectInFlight = false;
-      openedMmThisAttempt = false;
-    }
-
     function openMetaMaskViaWcUri(reason = "") {
       if (!wcUri) return;
-      if (openedMmThisAttempt) return; // ✅ open once only
+      if (openedMmThisAttempt) return; // open once
       openedMmThisAttempt = true;
 
       const uri = encodeURIComponent(wcUri);
@@ -114,6 +84,16 @@
       log("Opening MetaMask", reason ? `| ${reason}` : "");
       log(universalLink);
       location.href = universalLink;
+    }
+
+    async function teardownProvider() {
+      try { await provider?.disconnect?.(); } catch (_) {}
+      provider = null;
+      wcUri = null;
+      connectInFlight = false;
+      openedMmThisAttempt = false;
+      lastAccounts = [];
+      lastChainId = null;
     }
 
     async function ensureProvider() {
@@ -134,8 +114,7 @@
           url: location.origin,
           icons: ["https://metamask.io/images/favicon-32.png"],
         },
-
-        // Ask for Sepolia in the session
+        // Ask for Sepolia in session
         chains: [SEPOLIA],
         optionalChains: [SEPOLIA],
         rpcMap: { [SEPOLIA]: SEPOLIA_RPC_PRIMARY },
@@ -144,36 +123,58 @@
       provider.on("display_uri", (uri) => {
         wcUri = uri;
         log("display_uri ready");
-
-        // ✅ Only open MetaMask here (no timers, no second nudge)
         if (connectInFlight) openMetaMaskViaWcUri("display_uri during connect()");
       });
 
       provider.on("connect", (info) => log("connected:", JSON.stringify(info)));
+
       provider.on("disconnect", () => {
         log("disconnected");
         wcUri = null;
         connectInFlight = false;
         openedMmThisAttempt = false;
+        lastAccounts = [];
+        lastChainId = null;
       });
-      provider.on("accountsChanged", (accounts) => log("accountsChanged:", JSON.stringify(accounts)));
-      provider.on("chainChanged", (chainId) => log("chainChanged:", String(chainId)));
+
+      provider.on("accountsChanged", (accounts) => {
+        lastAccounts = Array.isArray(accounts) ? accounts : [];
+        log("accountsChanged:", JSON.stringify(lastAccounts));
+      });
+
+      provider.on("chainChanged", (chainId) => {
+        lastChainId = String(chainId).toLowerCase();
+        log("chainChanged:", lastChainId);
+      });
 
       log("Using relay:", relayUrl);
       return provider;
     }
 
+    // Small helper: wait for a condition with polling
+    async function waitFor(fn, { timeoutMs = 90000, intervalMs = 400, label = "condition" } = {}) {
+      const start = Date.now();
+      while (Date.now() - start < timeoutMs) {
+        try {
+          if (await fn()) return true;
+        } catch (_) {}
+        await new Promise(r => setTimeout(r, intervalMs));
+      }
+      throw new Error(`Timed out waiting for ${label} (${Math.round(timeoutMs/1000)}s).`);
+    }
+
     async function connectWithRelayFallback() {
       await ensureProvider();
 
-      // You wanted fresh behavior: always disconnect existing session first
+      // You still want "fresh": disconnect existing session first
       if (provider?.session) {
         log("Existing WC session found. Disconnecting to avoid stale account/session…");
         try { await provider.disconnect(); } catch (_) {}
         wcUri = null;
+        lastAccounts = [];
+        lastChainId = null;
       }
 
-      // Fresh attempt
       openedMmThisAttempt = false;
       connectInFlight = true;
 
@@ -194,28 +195,39 @@
     }
 
     async function ensureSepoliaNetwork() {
-      const current = await provider.request({ method: "eth_chainId" });
-      const currentStr = String(current).toLowerCase();
-      log("current chainId:", currentStr);
+      // On Android, immediate eth_chainId can lag. Prefer event state, but still verify.
+      showLoading("Ensuring Sepolia…");
 
-      if (currentStr === SEPOLIA_HEX) {
-        log("Already on Sepolia ✅");
+      // First, if events already show Sepolia, accept it quickly.
+      if (lastChainId === SEPOLIA_HEX) {
+        log("Already on Sepolia ✅ (from event)");
+        hideLoading();
         return;
       }
 
+      // Ask provider what it thinks (may be stale)
+      const currentHex = String(await provider.request({ method: "eth_chainId" })).toLowerCase();
+      log("current chainId:", currentHex);
+
+      if (currentHex === SEPOLIA_HEX) {
+        log("Already on Sepolia ✅");
+        hideLoading();
+        return;
+      }
+
+      // Request switch
+      showLoading("Approve network switch to Sepolia in MetaMask…");
       try {
-        showLoading("Approve network switch to Sepolia in MetaMask…");
         await provider.request({
           method: "wallet_switchEthereumChain",
           params: [{ chainId: SEPOLIA_HEX }],
         });
-        log("Switched to Sepolia ✅");
+        log("Switch requested ✅");
       } catch (e) {
         const code = e && (e.code ?? e?.data?.originalError?.code);
         log("switch error:", e?.message || e);
 
         if (code === 4902) {
-          showLoading("Approve add Sepolia + switch in MetaMask…");
           await provider.request({
             method: "wallet_addEthereumChain",
             params: [{
@@ -226,37 +238,67 @@
               blockExplorerUrls: [SEPOLIA_EXPLORER],
             }],
           });
-
           await provider.request({
             method: "wallet_switchEthereumChain",
             params: [{ chainId: SEPOLIA_HEX }],
           });
-
-          log("Added + switched to Sepolia ✅");
-          return;
+          log("Added + switched requested ✅");
+        } else {
+          throw e;
         }
-
-        throw e;
-      } finally {
-        hideLoading();
       }
+
+      // ✅ Wait until chain actually settles to Sepolia (this is what your log showed was late)
+      showLoading("Waiting for Sepolia to settle…");
+      await waitFor(async () => {
+        if (lastChainId === SEPOLIA_HEX) return true;
+        const c = String(await provider.request({ method: "eth_chainId" })).toLowerCase();
+        return c === SEPOLIA_HEX;
+      }, { timeoutMs: 90000, intervalMs: 500, label: "Sepolia chainId" });
+
+      log("Switched to Sepolia ✅");
+      hideLoading();
+    }
+
+    async function getAuthorizedAccount() {
+      // Try fast path
+      const a0 = Array.isArray(lastAccounts) && lastAccounts[0] ? lastAccounts[0] : null;
+      if (a0) return a0;
+
+      // Ask MetaMask to authorize (can return [] immediately on Android, then arrive later via accountsChanged)
+      try {
+        const req = await provider.request({ method: "eth_requestAccounts" });
+        if (Array.isArray(req) && req[0]) return req[0];
+      } catch (e) {
+        // ignore here; we’ll wait below
+        log("eth_requestAccounts error:", e?.message || e);
+      }
+
+      // ✅ Wait for accountsChanged to deliver the account (your log shows this happens AFTER your error)
+      showLoading("Waiting for MetaMask account approval…");
+      await waitFor(async () => {
+        const a = Array.isArray(lastAccounts) && lastAccounts[0] ? lastAccounts[0] : null;
+        if (a) return true;
+        const ea = await provider.request({ method: "eth_accounts" }).catch(() => []);
+        if (Array.isArray(ea) && ea[0]) { lastAccounts = ea; return true; }
+        return false;
+      }, { timeoutMs: 90000, intervalMs: 500, label: "authorized account" });
+
+      hideLoading();
+      return lastAccounts[0];
     }
 
     async function sendTestTxFromJS() {
-      // ✅ prevents "no such account" by re-authorizing accounts explicitly
-      const accounts = await provider.request({ method: "eth_requestAccounts" });
-      if (!accounts || !accounts[0]) throw new Error("No authorized account (eth_requestAccounts returned empty).");
+      const account = await getAuthorizedAccount();
 
       const ethersProvider = new ethers.BrowserProvider(provider);
-      const signer = await ethersProvider.getSigner(accounts[0]);
+      const signer = await ethersProvider.getSigner(account);
 
-      const from = await signer.getAddress();
-      log("signer:", from);
+      log("signer:", account);
       log("to:", TO_ADDRESS);
       log("valueWei:", TEST_VALUE_WEI);
 
       showLoading("Approve transaction in MetaMask…");
-
       const tx = await signer.sendTransaction({
         to: TO_ADDRESS,
         value: BigInt(TEST_VALUE_WEI),
@@ -276,9 +318,6 @@
       hideError();
 
       try {
-        // keep this if you still see relay spam; otherwise you can remove it
-        clearWalletConnectStorage();
-
         showLoading("Connecting wallet…");
         log("Tap MetaMask approvals when prompted, then return to Chrome if needed.");
 
@@ -300,6 +339,7 @@
   </script>
 </body>
 </html>
+
 
 
 
