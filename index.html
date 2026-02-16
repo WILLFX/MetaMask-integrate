@@ -47,8 +47,11 @@
     const SEPOLIA_RPC_SECONDARY = "https://rpc2.sepolia.org";
     const SEPOLIA_EXPLORER = "https://sepolia.etherscan.io";
 
+    // Recipient (Account 1)
     const TO_ADDRESS = "0x789c7d1f7dfef60a00ff6f7a87ba426bde521b08";
-    const TEST_VALUE_WEI = "600000000000000"; // 0.0006
+
+    // 0.0006 ETH in wei
+    const TEST_VALUE_WEI = "600000000000000";
 
     // ---------------- STATE ----------------
     let provider = null;
@@ -58,9 +61,9 @@
     let connectInFlight = false;
     let openedMmThisAttempt = false;
 
-    // live "last known" values from events (more reliable than immediate request() on Android)
+    // Last-known state from events (more reliable on Android)
     let lastAccounts = [];
-    let lastChainId = null; // string like "0xaa36a7"
+    let lastChainId = null; // "0xaa36a7"
 
     function isRelayishError(e) {
       const msg = String((e && (e.message ?? e)) ?? "");
@@ -75,7 +78,7 @@
 
     function openMetaMaskViaWcUri(reason = "") {
       if (!wcUri) return;
-      if (openedMmThisAttempt) return; // open once
+      if (openedMmThisAttempt) return;
       openedMmThisAttempt = true;
 
       const uri = encodeURIComponent(wcUri);
@@ -114,7 +117,6 @@
           url: location.origin,
           icons: ["https://metamask.io/images/favicon-32.png"],
         },
-        // Ask for Sepolia in session
         chains: [SEPOLIA],
         optionalChains: [SEPOLIA],
         rpcMap: { [SEPOLIA]: SEPOLIA_RPC_PRIMARY },
@@ -151,8 +153,7 @@
       return provider;
     }
 
-    // Small helper: wait for a condition with polling
-    async function waitFor(fn, { timeoutMs = 90000, intervalMs = 400, label = "condition" } = {}) {
+    async function waitFor(fn, { timeoutMs = 90000, intervalMs = 500, label = "condition" } = {}) {
       const start = Date.now();
       while (Date.now() - start < timeoutMs) {
         try {
@@ -166,7 +167,7 @@
     async function connectWithRelayFallback() {
       await ensureProvider();
 
-      // You still want "fresh": disconnect existing session first
+      // Fresh behavior: disconnect existing session to avoid stale account binding
       if (provider?.session) {
         log("Existing WC session found. Disconnecting to avoid stale account/session…");
         try { await provider.disconnect(); } catch (_) {}
@@ -195,17 +196,14 @@
     }
 
     async function ensureSepoliaNetwork() {
-      // On Android, immediate eth_chainId can lag. Prefer event state, but still verify.
       showLoading("Ensuring Sepolia…");
 
-      // First, if events already show Sepolia, accept it quickly.
       if (lastChainId === SEPOLIA_HEX) {
         log("Already on Sepolia ✅ (from event)");
         hideLoading();
         return;
       }
 
-      // Ask provider what it thinks (may be stale)
       const currentHex = String(await provider.request({ method: "eth_chainId" })).toLowerCase();
       log("current chainId:", currentHex);
 
@@ -215,7 +213,6 @@
         return;
       }
 
-      // Request switch
       showLoading("Approve network switch to Sepolia in MetaMask…");
       try {
         await provider.request({
@@ -238,17 +235,18 @@
               blockExplorerUrls: [SEPOLIA_EXPLORER],
             }],
           });
+
           await provider.request({
             method: "wallet_switchEthereumChain",
             params: [{ chainId: SEPOLIA_HEX }],
           });
+
           log("Added + switched requested ✅");
         } else {
           throw e;
         }
       }
 
-      // ✅ Wait until chain actually settles to Sepolia (this is what your log showed was late)
       showLoading("Waiting for Sepolia to settle…");
       await waitFor(async () => {
         if (lastChainId === SEPOLIA_HEX) return true;
@@ -261,20 +259,16 @@
     }
 
     async function getAuthorizedAccount() {
-      // Try fast path
       const a0 = Array.isArray(lastAccounts) && lastAccounts[0] ? lastAccounts[0] : null;
       if (a0) return a0;
 
-      // Ask MetaMask to authorize (can return [] immediately on Android, then arrive later via accountsChanged)
       try {
         const req = await provider.request({ method: "eth_requestAccounts" });
         if (Array.isArray(req) && req[0]) return req[0];
       } catch (e) {
-        // ignore here; we’ll wait below
         log("eth_requestAccounts error:", e?.message || e);
       }
 
-      // ✅ Wait for accountsChanged to deliver the account (your log shows this happens AFTER your error)
       showLoading("Waiting for MetaMask account approval…");
       await waitFor(async () => {
         const a = Array.isArray(lastAccounts) && lastAccounts[0] ? lastAccounts[0] : null;
@@ -292,6 +286,20 @@
       const account = await getAuthorizedAccount();
 
       const ethersProvider = new ethers.BrowserProvider(provider);
+
+      // ✅ ADDED: log balance + wait a bit if balance temporarily shows 0
+      let bal = await ethersProvider.getBalance(account);
+      log("balanceWei:", bal.toString());
+
+      // Wait up to ~10 seconds for balance to reflect (Android/WC can lag)
+      for (let i = 0; i < 20; i++) {
+        if (bal > 0n) break;
+        log("balance still 0, waiting...");
+        await new Promise(r => setTimeout(r, 500));
+        bal = await ethersProvider.getBalance(account);
+      }
+      log("balanceWei(after):", bal.toString());
+
       const signer = await ethersProvider.getSigner(account);
 
       log("signer:", account);
@@ -299,9 +307,12 @@
       log("valueWei:", TEST_VALUE_WEI);
 
       showLoading("Approve transaction in MetaMask…");
+
+      // ✅ ADDED: set gasLimit to avoid eth_estimateGas (prevents your INSUFFICIENT_FUNDS-from-estimate bug)
       const tx = await signer.sendTransaction({
         to: TO_ADDRESS,
         value: BigInt(TEST_VALUE_WEI),
+        gasLimit: 21000n
       });
 
       log("tx sent:", tx.hash);
@@ -339,7 +350,3 @@
   </script>
 </body>
 </html>
-
-
-
-
