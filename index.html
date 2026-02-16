@@ -248,7 +248,7 @@
         }
       }
 
-      // ✅ Wait until chain actually settles to Sepolia (this is what your log showed was late)
+      // ✅ Wait until chain actually settles to Sepolia
       showLoading("Waiting for Sepolia to settle…");
       await waitFor(async () => {
         if (lastChainId === SEPOLIA_HEX) return true;
@@ -265,16 +265,15 @@
       const a0 = Array.isArray(lastAccounts) && lastAccounts[0] ? lastAccounts[0] : null;
       if (a0) return a0;
 
-      // Ask MetaMask to authorize (can return [] immediately on Android, then arrive later via accountsChanged)
+      // Ask MetaMask to authorize (can return [] immediately on Android)
       try {
         const req = await provider.request({ method: "eth_requestAccounts" });
         if (Array.isArray(req) && req[0]) return req[0];
       } catch (e) {
-        // ignore here; we’ll wait below
         log("eth_requestAccounts error:", e?.message || e);
       }
 
-      // ✅ Wait for accountsChanged to deliver the account (your log shows this happens AFTER your error)
+      // ✅ Wait for accountsChanged to deliver the account
       showLoading("Waiting for MetaMask account approval…");
       await waitFor(async () => {
         const a = Array.isArray(lastAccounts) && lastAccounts[0] ? lastAccounts[0] : null;
@@ -297,6 +296,23 @@
       log("signer:", account);
       log("to:", TO_ADDRESS);
       log("valueWei:", TEST_VALUE_WEI);
+
+      // ---------------- TEST: force fresh reads (chain + balances) ----------------
+      const chainNow = String(await provider.request({ method: "eth_chainId" })).toLowerCase();
+      log("chainId (pre-tx):", chainNow);
+
+      // Raw RPC balance
+      const balHex = await provider.request({ method: "eth_getBalance", params: [account, "latest"] });
+      const balWeiRpc = BigInt(balHex);
+      log("balanceHex (eth_getBalance):", balHex);
+      log("balanceWei (eth_getBalance):", balWeiRpc.toString());
+      log("balanceETH (eth_getBalance):", ethers.formatEther(balWeiRpc));
+
+      // Ethers balance (same provider, different path)
+      const balWeiEthers = await ethersProvider.getBalance(account);
+      log("balanceWei (ethers.getBalance):", balWeiEthers.toString());
+      log("balanceETH (ethers.getBalance):", ethers.formatEther(balWeiEthers));
+      // --------------------------------------------------------------------------
 
       showLoading("Approve transaction in MetaMask…");
       const tx = await signer.sendTransaction({
