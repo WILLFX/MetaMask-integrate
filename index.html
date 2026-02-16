@@ -70,11 +70,9 @@
     let provider = null;
     let wcUri = null;
 
-    // For stable mobile handshake (prevents UI races)
     let busy = false;
     let connectInFlight = false;
     let openAttempts = 0;
-    let lastConnectAttemptId = 0;
 
     function isRelayishError(e) {
       const msg = (e && (e.message || String(e))) || "";
@@ -87,20 +85,15 @@
       );
     }
 
-    // Clear stale WC storage (fixes many "failed to process inbound message" issues)
+    // Minimal targeted clear (prevents "failed to process inbound message" loops)
     function clearWalletConnectStorage() {
       for (const k of Object.keys(localStorage)) {
         const kl = k.toLowerCase();
-        if (k.startsWith("wc@") || kl.includes("walletconnect") || kl.includes("wc")) {
-          // be conservative: only remove WC-like keys
-          if (k.startsWith("wc@") || kl.includes("walletconnect")) localStorage.removeItem(k);
-        }
+        if (k.startsWith("wc@") || kl.includes("walletconnect")) localStorage.removeItem(k);
       }
       for (const k of Object.keys(sessionStorage)) {
         const kl = k.toLowerCase();
-        if (k.startsWith("wc@") || kl.includes("walletconnect") || kl.includes("wc")) {
-          if (k.startsWith("wc@") || kl.includes("walletconnect")) sessionStorage.removeItem(k);
-        }
+        if (k.startsWith("wc@") || kl.includes("walletconnect")) sessionStorage.removeItem(k);
       }
     }
 
@@ -115,13 +108,13 @@
     function openMetaMaskViaWcUri(reason = "") {
       if (!wcUri) return;
 
-      // Limit attempts so we don't spam-open the app and collapse MetaMask sheets.
+      // Don't spam-open MetaMask (can collapse bottom sheet)
       if (openAttempts >= 2) return;
       openAttempts++;
 
       const uri = encodeURIComponent(wcUri);
 
-      // Use universal link (more stable than metamask:// on many Android devices)
+      // Universal link is more reliable than metamask:// on many Android devices
       const universalLink = `https://metamask.app.link/wc?uri=${uri}`;
 
       log(`Opening MetaMask (${openAttempts}/2)`, reason ? `| ${reason}` : "");
@@ -147,7 +140,6 @@
           url: location.origin,
           icons: ["https://metamask.io/images/favicon-32.png"],
         },
-        // Keep it flexible: we'll enforce Sepolia with switch/add below
         optionalChains: [SEPOLIA],
         rpcMap: { [SEPOLIA]: SEPOLIA_RPC_PRIMARY },
       });
@@ -156,11 +148,8 @@
         wcUri = uri;
         log("display_uri ready");
 
-        // IMPORTANT: do NOT auto-open MetaMask here.
-        // If connect is already in flight, we can open once now (stable timing).
-        if (connectInFlight) {
-          openMetaMaskViaWcUri("display_uri during connect()");
-        }
+        // IMPORTANT: do NOT open MetaMask immediately here unless connect() is in flight
+        if (connectInFlight) openMetaMaskViaWcUri("display_uri during connect()");
       });
 
       provider.on("connect", (info) => log("connected:", JSON.stringify(info)));
@@ -177,35 +166,31 @@
       return provider;
     }
 
+    // ✅ FIXED PART: always disconnect any existing session first
+    // This prevents stale sessions binding you to Account 1 when you want Account 2.
     async function connectWithRelayFallback() {
       await ensureProvider();
 
-      // If already connected, don't reconnect (prevents duplicate prompts)
+      // If there's a session already, disconnect it so MetaMask will prompt again.
       if (provider?.session) {
-        log("WC session already present. Skipping connect().");
-        return;
+        log("Existing WC session found. Disconnecting to avoid stale account/session…");
+        try { await provider.disconnect(); } catch (_) {}
+        wcUri = null;
       }
 
-      // New connect attempt
-      lastConnectAttemptId++;
-      const attemptId = lastConnectAttemptId;
-
-      wcUri = null;
       connectInFlight = true;
       openAttempts = 0;
 
       const connectPromise = provider.connect();
 
-      // Open MetaMask shortly after connect starts (better than doing it inside display_uri)
+      // Open MetaMask shortly after connect starts (stable timing)
       setTimeout(() => {
-        if (attemptId !== lastConnectAttemptId) return;
         if (!connectInFlight) return;
         if (wcUri) openMetaMaskViaWcUri("connect() started");
       }, 350);
 
-      // Safety: try one more time a bit later if still not connected
+      // Second nudge if needed
       setTimeout(() => {
-        if (attemptId !== lastConnectAttemptId) return;
         if (!connectInFlight) return;
         if (wcUri) openMetaMaskViaWcUri("second nudge");
       }, 1400);
@@ -213,19 +198,13 @@
       try {
         await connectPromise;
       } catch (e) {
-        if (!isRelayishError(e)) {
-          connectInFlight = false;
-          throw e;
-        }
+        if (!isRelayishError(e)) throw e;
 
         log("Relay seems unreachable. Trying fallback relay…");
         await teardownProvider();
         relayIdx = (relayIdx + 1) % RELAYS.length;
 
         await ensureProvider();
-
-        // Restart attempt
-        lastConnectAttemptId++;
         return connectWithRelayFallback();
       } finally {
         connectInFlight = false;
@@ -281,7 +260,6 @@
     }
 
     async function sendTestTxFromJS() {
-      // This is the key requirement: provider + signer in JS.
       const ethersProvider = new ethers.BrowserProvider(provider);
       const signer = await ethersProvider.getSigner();
 
@@ -303,23 +281,6 @@
       hideLoading();
     }
 
-    async function mainOneButtonFlow() {
-      // Clean slate for handshake stability (optional but recommended)
-      clearWalletConnectStorage();
-
-      showLoading("Connecting wallet…");
-      log("Tap MetaMask approvals when prompted, then return to Chrome if needed.");
-
-      // 1) Connect WC (provider becomes usable in JS)
-      await connectWithRelayFallback();
-
-      // 2) Ensure Sepolia
-      await ensureSepoliaNetwork();
-
-      // 3) Send tx from JS using ethers signer
-      await sendTestTxFromJS();
-    }
-
     btnDoIt.onclick = async () => {
       if (busy) return;
       busy = true;
@@ -329,23 +290,27 @@
       hideError();
 
       try {
-        await mainOneButtonFlow();
+        // Helps eliminate relay message spam from old sessions
+        clearWalletConnectStorage();
+
+        showLoading("Connecting wallet…");
+        log("Tap MetaMask approvals when prompted, then return to Chrome if needed.");
+
+        await connectWithRelayFallback();
+        await ensureSepoliaNetwork();
+        await sendTestTxFromJS();
+
       } catch (e) {
         hideLoading();
         const msg = String(e?.message || e);
         log("error:", msg);
         showError(msg);
-
-        // Mobile UX reality: after MetaMask approval, user may need to tap the same button again.
         log("If MetaMask opened, approve prompts then come back and tap the SAME button again.");
       } finally {
         btnDoIt.disabled = false;
         busy = false;
       }
     };
-
-    // Optional: if user returns from MetaMask and connection is now established,
-    // they can tap the same one button again to continue.
   </script>
 </body>
 </html>
