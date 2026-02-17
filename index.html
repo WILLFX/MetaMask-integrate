@@ -35,8 +35,6 @@
     function showError(msg) { errorMessage.style.display = "block"; errorMessage.textContent = msg; }
     function hideError() { errorMessage.style.display = "none"; }
 
-    const sleep = (ms) => new Promise(r => setTimeout(r, ms));
-
     // ---------------- CONFIG ----------------
     const projectId = "19acc37cc9d91b4b39b0cca952297654";
 
@@ -49,43 +47,8 @@
     const SEPOLIA_RPC_SECONDARY = "https://rpc2.sepolia.org";
     const SEPOLIA_EXPLORER = "https://sepolia.etherscan.io";
 
-    // Recipient (Account 1)
     const TO_ADDRESS = "0x789c7d1f7dfef60a00ff6f7a87ba426bde521b08";
-    // 0.0006 ETH in wei
-    const TEST_VALUE_WEI = "600000000000000";
-
-    // ---------------- PAGE INSTANCE + RESUME ----------------
-    const PAGE_INSTANCE_ID = (crypto?.randomUUID?.() ?? (Date.now().toString(36) + Math.random().toString(36).slice(2)));
-    const FLOW_KEY = "wc_onebutton_flow_v2";
-    const FLOW_TTL_MS = 10 * 60 * 1000;
-
-    function loadFlow() {
-      try {
-        const raw = localStorage.getItem(FLOW_KEY);
-        if (!raw) return null;
-        const obj = JSON.parse(raw);
-        if (!obj || !obj.inProgress) return null;
-        if ((Date.now() - (obj.updatedAt || 0)) > FLOW_TTL_MS) {
-          localStorage.removeItem(FLOW_KEY);
-          return null;
-        }
-        return obj;
-      } catch {
-        return null;
-      }
-    }
-
-    function saveFlow(patch) {
-      const cur = loadFlow() || {};
-      const next = { ...cur, ...patch, updatedAt: Date.now() };
-      localStorage.setItem(FLOW_KEY, JSON.stringify(next));
-    }
-
-    function clearFlow() {
-      localStorage.removeItem(FLOW_KEY);
-    }
-
-    log("PAGE_INSTANCE_ID:", PAGE_INSTANCE_ID);
+    const TEST_VALUE_WEI = "600000000000000"; // 0.0006
 
     // ---------------- STATE ----------------
     let provider = null;
@@ -95,9 +58,16 @@
     let connectInFlight = false;
     let openedMmThisAttempt = false;
 
-    // last known values from events
     let lastAccounts = [];
-    let lastChainId = null; // string like "0xaa36a7"
+    let lastChainId = null;
+
+    function normalizeChainIdToHex(chainId) {
+      if (typeof chainId === "number") return ("0x" + chainId.toString(16)).toLowerCase();
+      const s = String(chainId).trim().toLowerCase();
+      if (s.startsWith("0x")) return s;
+      if (/^\d+$/.test(s)) return ("0x" + Number(s).toString(16)).toLowerCase();
+      return s;
+    }
 
     function isRelayishError(e) {
       const msg = String((e && (e.message ?? e)) ?? "");
@@ -112,13 +82,12 @@
 
     function openMetaMaskViaWcUri(reason = "") {
       if (!wcUri) return;
-      if (openedMmThisAttempt) return; // open only once per attempt
+      if (openedMmThisAttempt) return; // open once
       openedMmThisAttempt = true;
 
       const uri = encodeURIComponent(wcUri);
       const universalLink = `https://metamask.app.link/wc?uri=${uri}`;
 
-      saveFlow({ stage: "awaiting_approval" });
       log("Opening MetaMask", reason ? `| ${reason}` : "");
       log(universalLink);
       location.href = universalLink;
@@ -180,7 +149,7 @@
       });
 
       provider.on("chainChanged", (chainId) => {
-        lastChainId = String(chainId).toLowerCase();
+        lastChainId = normalizeChainIdToHex(chainId);
         log("chainChanged:", lastChainId);
       });
 
@@ -191,38 +160,18 @@
     async function waitFor(fn, { timeoutMs = 90000, intervalMs = 400, label = "condition" } = {}) {
       const start = Date.now();
       while (Date.now() - start < timeoutMs) {
-        try {
-          if (await fn()) return true;
-        } catch (_) {}
-        await sleep(intervalMs);
+        try { if (await fn()) return true; } catch (_) {}
+        await new Promise(r => setTimeout(r, intervalMs));
       }
       throw new Error(`Timed out waiting for ${label} (${Math.round(timeoutMs/1000)}s).`);
     }
 
-    // Connect logic:
-    // - If session already authorized (eth_accounts non-empty), reuse (important for "Chrome reloaded" cases)
-    // - BUT if that account equals TO_ADDRESS, force fresh connect so you can choose a different account.
+    // Your protocol: always disconnect existing session first
     async function connectWithRelayFallback() {
       await ensureProvider();
 
       if (provider?.session) {
-        const existing = await provider.request({ method: "eth_accounts" }).catch(() => []);
-        if (Array.isArray(existing) && existing[0]) {
-          lastAccounts = existing;
-          log("WC session already authorized. Reusing ✅");
-
-          if (String(existing[0]).toLowerCase() !== TO_ADDRESS.toLowerCase()) {
-            saveFlow({ stage: "connected_reused" });
-            return; // reuse is safe
-          }
-
-          log("Authorized account == recipient. Forcing fresh connect so you can pick Account 2…");
-        } else {
-          log("WC session present but no authorized account yet.");
-        }
-
-        // Force fresh permission prompt
-        log("Disconnecting existing WC session to request permissions again…");
+        log("Existing WC session found. Disconnecting to avoid stale account/session…");
         try { await provider.disconnect(); } catch (_) {}
         wcUri = null;
         lastAccounts = [];
@@ -231,27 +180,9 @@
 
       openedMmThisAttempt = false;
       connectInFlight = true;
-      saveFlow({ stage: "connecting" });
 
       try {
-        const connectPromise = provider.connect();
-
-        // If display_uri already arrived, open MetaMask once shortly after connect begins.
-        setTimeout(() => {
-          if (!connectInFlight) return;
-          if (wcUri) openMetaMaskViaWcUri("connect() started");
-        }, 350);
-
-        // Optional single nudge ONLY if still no account after a while
-        setTimeout(() => {
-          if (!connectInFlight) return;
-          if (wcUri && !(Array.isArray(lastAccounts) && lastAccounts[0])) {
-            openMetaMaskViaWcUri("nudge (no account yet)");
-          }
-        }, 4000);
-
-        await connectPromise;
-        saveFlow({ stage: "connected" });
+        await provider.connect();
       } catch (e) {
         if (!isRelayishError(e)) throw e;
 
@@ -266,56 +197,22 @@
       }
     }
 
-    async function getChainIdHex() {
-      const c = await provider.request({ method: "eth_chainId" });
-      return String(c).toLowerCase();
-    }
-
-    // Sepolia settle window:
-    // - After connect, give the wallet a moment to "settle" before we request a switch.
-    // - This reduces pointless switch prompts and reduces delays.
+    // ✅ The actual fix: do NOT trust events; only trust eth_chainId
     async function ensureSepoliaNetwork() {
       showLoading("Ensuring Sepolia…");
-      saveFlow({ stage: "ensuring_sepolia" });
 
-      // Fast path from events
-      if (lastChainId === SEPOLIA_HEX) {
-        log("Already on Sepolia ✅ (from event)");
-        hideLoading();
-        return;
-      }
+      const readChain = async () => normalizeChainIdToHex(await provider.request({ method: "eth_chainId" }));
 
-      // Settle window (no prompts)
-      showLoading("Checking network (settling)…");
-      const settleUntil = Date.now() + 4500;
-      while (Date.now() < settleUntil) {
-        if (lastChainId === SEPOLIA_HEX) {
-          log("Already on Sepolia ✅ (settled via event)");
-          hideLoading();
-          return;
-        }
-        const c = await getChainIdHex().catch(() => null);
-        if (c === SEPOLIA_HEX) {
-          log("Already on Sepolia ✅ (settled via request)");
-          hideLoading();
-          return;
-        }
-        await sleep(450);
-      }
+      let current = await readChain();
+      log("current chainId:", current);
 
-      // Still not Sepolia, request switch
-      const currentHex = await getChainIdHex();
-      log("current chainId:", currentHex);
-
-      if (currentHex === SEPOLIA_HEX) {
+      if (current === SEPOLIA_HEX) {
         log("Already on Sepolia ✅");
         hideLoading();
         return;
       }
 
       showLoading("Approve network switch to Sepolia in MetaMask…");
-      saveFlow({ stage: "switch_prompted" });
-
       try {
         await provider.request({
           method: "wallet_switchEthereumChain",
@@ -337,27 +234,27 @@
               blockExplorerUrls: [SEPOLIA_EXPLORER],
             }],
           });
+
           await provider.request({
             method: "wallet_switchEthereumChain",
             params: [{ chainId: SEPOLIA_HEX }],
           });
-          log("Added + switch requested ✅");
+
+          log("Added + switched requested ✅");
         } else {
           throw e;
         }
       }
 
-      // Wait until it truly settles to Sepolia
       showLoading("Waiting for Sepolia to settle…");
-      await waitFor(async () => {
-        if (lastChainId === SEPOLIA_HEX) return true;
-        const c = await getChainIdHex().catch(() => null);
-        return c === SEPOLIA_HEX;
-      }, { timeoutMs: 90000, intervalMs: 500, label: "Sepolia chainId" });
+      await waitFor(async () => (await readChain()) === SEPOLIA_HEX, {
+        timeoutMs: 90000,
+        intervalMs: 500,
+        label: "Sepolia chainId via eth_chainId"
+      });
 
       log("Switched to Sepolia ✅");
       hideLoading();
-      saveFlow({ stage: "sepolia_ready" });
     }
 
     async function getAuthorizedAccount() {
@@ -375,7 +272,6 @@
       await waitFor(async () => {
         const a = Array.isArray(lastAccounts) && lastAccounts[0] ? lastAccounts[0] : null;
         if (a) return true;
-
         const ea = await provider.request({ method: "eth_accounts" }).catch(() => []);
         if (Array.isArray(ea) && ea[0]) { lastAccounts = ea; return true; }
         return false;
@@ -386,16 +282,15 @@
     }
 
     async function sendTestTxFromJS() {
-      saveFlow({ stage: "sending_tx" });
-
-      // Hard gate: do NOT send until chain truly equals Sepolia
-      await waitFor(async () => {
-        if (lastChainId === SEPOLIA_HEX) return true;
-        const c = await getChainIdHex().catch(() => null);
-        return c === SEPOLIA_HEX;
-      }, { timeoutMs: 30000, intervalMs: 500, label: "Sepolia at send-time" });
-
       const account = await getAuthorizedAccount();
+
+      // ✅ HARD STOP: if we are not on Sepolia, we do NOT attempt a tx
+      const chainNow = normalizeChainIdToHex(await provider.request({ method: "eth_chainId" }));
+      log("chainId (pre-tx):", chainNow);
+
+      if (chainNow !== SEPOLIA_HEX) {
+        throw new Error(`Not on Sepolia (chainId=${chainNow}). Not sending from Mainnet. Approve the Sepolia switch in MetaMask, then tap the button again.`);
+      }
 
       const ethersProvider = new ethers.BrowserProvider(provider);
       const signer = await ethersProvider.getSigner(account);
@@ -404,8 +299,19 @@
       log("to:", TO_ADDRESS);
       log("valueWei:", TEST_VALUE_WEI);
 
-      showLoading("Approve transaction in MetaMask…");
+      // --- Your balance test (kept) ---
+      const balHex = await provider.request({ method: "eth_getBalance", params: [account, "latest"] });
+      const balWeiRpc = BigInt(balHex);
+      log("balanceHex (eth_getBalance):", balHex);
+      log("balanceWei (eth_getBalance):", balWeiRpc.toString());
+      log("balanceETH (eth_getBalance):", ethers.formatEther(balWeiRpc));
 
+      const balWeiEthers = await ethersProvider.getBalance(account);
+      log("balanceWei (ethers.getBalance):", balWeiEthers.toString());
+      log("balanceETH (ethers.getBalance):", ethers.formatEther(balWeiEthers));
+      // -------------------------------
+
+      showLoading("Approve transaction in MetaMask…");
       const tx = await signer.sendTransaction({
         to: TO_ADDRESS,
         value: BigInt(TEST_VALUE_WEI),
@@ -414,33 +320,25 @@
       log("tx sent:", tx.hash);
       log("Etherscan:", `${SEPOLIA_EXPLORER}/tx/${tx.hash}`);
       hideLoading();
-
-      saveFlow({ stage: "done" });
-      clearFlow();
     }
 
-    async function runFlow({ resume = false } = {}) {
+    btnDoIt.onclick = async () => {
       if (busy) return;
       busy = true;
 
       btnDoIt.disabled = true;
+      logEl.textContent = "";
       hideError();
 
-      if (!resume) logEl.textContent = "";
-
       try {
-        if (!resume) {
-          saveFlow({ inProgress: true, stage: "start", startedAt: Date.now(), pageInstance: PAGE_INSTANCE_ID });
-        } else {
-          // keep existing stage; just mark we tried
-          saveFlow({ inProgress: true });
-        }
-
         showLoading("Connecting wallet…");
         log("Tap MetaMask approvals when prompted, then return to Chrome if needed.");
 
         await connectWithRelayFallback();
+
+        // ✅ must be confirmed Sepolia via eth_chainId before sending
         await ensureSepoliaNetwork();
+
         await sendTestTxFromJS();
 
       } catch (e) {
@@ -448,45 +346,12 @@
         const msg = String(e?.message || e);
         log("error:", msg);
         showError(msg);
-
-        // Keep flow marker so returning to Chrome can resume
-        saveFlow({ inProgress: true, stage: loadFlow()?.stage || "error_waiting" });
-
         log("If MetaMask opened, approve prompts then come back and tap the SAME button again.");
       } finally {
         btnDoIt.disabled = false;
         busy = false;
       }
-    }
-
-    // Button
-    btnDoIt.onclick = async () => {
-      await runFlow({ resume: false });
     };
-
-    // Resume strategy:
-    // - If Chrome reloads after app switch, we can continue without forcing a brand-new handshake.
-    let lastResumeAttempt = 0;
-    async function maybeResume(trigger) {
-      const st = loadFlow();
-      if (!st || !st.inProgress) return;
-      if (busy) return;
-
-      // throttle resume attempts
-      if (Date.now() - lastResumeAttempt < 1200) return;
-      lastResumeAttempt = Date.now();
-
-      log(`Resume check (${trigger}) stage=${st.stage} savedPage=${st.pageInstance || "?"} nowPage=${PAGE_INSTANCE_ID}`);
-      await runFlow({ resume: true });
-    }
-
-    document.addEventListener("visibilitychange", () => {
-      if (!document.hidden) maybeResume("visibilitychange");
-    });
-
-    // Also try once shortly after load
-    setTimeout(() => maybeResume("onload"), 300);
   </script>
 </body>
 </html>
-
