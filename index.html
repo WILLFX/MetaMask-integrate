@@ -35,6 +35,41 @@
     function showError(msg) { errorMessage.style.display = "block"; errorMessage.textContent = msg; }
     function hideError() { errorMessage.style.display = "none"; }
 
+    // ---------------- PERF / RESUME MARKERS ----------------
+    const PAGE_INSTANCE_ID = (crypto?.randomUUID?.() ?? (Date.now().toString(36) + Math.random().toString(36).slice(2)));
+    const FLOW_KEY = "wc_one_button_flow_v1";
+    const FLOW_TTL_MS = 10 * 60 * 1000;
+
+    function nowMs() { return Date.now(); }
+    function readFlow() {
+      try { return JSON.parse(localStorage.getItem(FLOW_KEY) || "null"); } catch { return null; }
+    }
+    function writeFlow(patch) {
+      const cur = readFlow() || {};
+      const next = { ...cur, ...patch };
+      localStorage.setItem(FLOW_KEY, JSON.stringify(next));
+      return next;
+    }
+    function clearFlow() { localStorage.removeItem(FLOW_KEY); }
+    function isFlowFresh(flow) {
+      return !!(flow && flow.startedAt && (nowMs() - flow.startedAt) < FLOW_TTL_MS);
+    }
+
+    log("page_instance:", PAGE_INSTANCE_ID);
+    const bootFlow = readFlow();
+    if (isFlowFresh(bootFlow) && bootFlow.stage && bootFlow.stage !== "done") {
+      log("resume_marker:", JSON.stringify(bootFlow));
+    }
+
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "visible") {
+        const f = readFlow();
+        if (isFlowFresh(f) && f.stage && f.stage !== "done") {
+          log("visible_again:", "resume_marker present (page may have reloaded earlier)");
+        }
+      }
+    });
+
     // ---------------- CONFIG ----------------
     const projectId = "19acc37cc9d91b4b39b0cca952297654";
 
@@ -43,8 +78,15 @@
 
     const SEPOLIA = 11155111;
     const SEPOLIA_HEX = "0xaa36a7";
-    const SEPOLIA_RPC_PRIMARY = "https://rpc.sepolia.org";
-    const SEPOLIA_RPC_SECONDARY = "https://rpc2.sepolia.org";
+
+    // ✅ Fast Sepolia RPC (Alchemy)
+    const SEPOLIA_RPC_PRIMARY = "https://eth-sepolia.g.alchemy.com/v2/7meoZAwbjWt6m9on3Phcy";
+
+    // ✅ Fallbacks (only used if needed)
+    const SEPOLIA_RPC_SECONDARY = "https://ethereum-sepolia-rpc.publicnode.com";
+    const SEPOLIA_RPC_TERTIARY = "https://rpc.sepolia.org";
+    const SEPOLIA_RPC_QUATERNARY = "https://rpc2.sepolia.org";
+
     const SEPOLIA_EXPLORER = "https://sepolia.etherscan.io";
 
     const TO_ADDRESS = "0x789c7d1f7dfef60a00ff6f7a87ba426bde521b08";
@@ -123,6 +165,7 @@
         },
         chains: [SEPOLIA],
         optionalChains: [SEPOLIA],
+        // ✅ Use Alchemy for the WC provider
         rpcMap: { [SEPOLIA]: SEPOLIA_RPC_PRIMARY },
       });
 
@@ -166,11 +209,24 @@
       throw new Error(`Timed out waiting for ${label} (${Math.round(timeoutMs/1000)}s).`);
     }
 
-    // Your protocol: always disconnect existing session first
+    // Your protocol: disconnect existing session first
+    // ✅ Exception: if Android reloaded the page mid-flow, we don't nuke the active session.
     async function connectWithRelayFallback() {
       await ensureProvider();
 
+      const flow = readFlow();
+      const resumeOk = isFlowFresh(flow) && flow.stage && flow.stage !== "done";
+
       if (provider?.session) {
+        // Try a cheap check to see if session is already authorized (helps after page reload)
+        const existingAccounts = await provider.request({ method: "eth_accounts" }).catch(() => []);
+        if (resumeOk && Array.isArray(existingAccounts) && existingAccounts[0]) {
+          lastAccounts = existingAccounts;
+          log("Resuming existing session (accounts already authorized) ✅");
+          return;
+        }
+
+        // Normal behavior: fresh start
         log("Existing WC session found. Disconnecting to avoid stale account/session…");
         try { await provider.disconnect(); } catch (_) {}
         wcUri = null;
@@ -197,12 +253,12 @@
       }
     }
 
-    // ✅ The actual fix: do NOT trust events; only trust eth_chainId
+    // ✅ Do NOT trust events; only trust eth_chainId
+    // ✅ Add "settle window" to avoid unnecessary switch prompts
     async function ensureSepoliaNetwork() {
       showLoading("Ensuring Sepolia…");
 
       const readChain = async () => normalizeChainIdToHex(await provider.request({ method: "eth_chainId" }));
-
       let current = await readChain();
       log("current chainId:", current);
 
@@ -210,6 +266,21 @@
         log("Already on Sepolia ✅");
         hideLoading();
         return;
+      }
+
+      // --- Settle window: sometimes the provider catches up without needing a switch prompt ---
+      showLoading("Checking if chain settles to Sepolia…");
+      try {
+        await waitFor(async () => (await readChain()) === SEPOLIA_HEX, {
+          timeoutMs: 3500,
+          intervalMs: 300,
+          label: "Sepolia settle window"
+        });
+        log("Sepolia detected after settle ✅ (skipped switch prompt)");
+        hideLoading();
+        return;
+      } catch (_) {
+        // continue to switch
       }
 
       showLoading("Approve network switch to Sepolia in MetaMask…");
@@ -230,7 +301,13 @@
               chainId: SEPOLIA_HEX,
               chainName: "Sepolia",
               nativeCurrency: { name: "ETH", symbol: "ETH", decimals: 18 },
-              rpcUrls: [SEPOLIA_RPC_PRIMARY, SEPOLIA_RPC_SECONDARY],
+              // ✅ Put Alchemy first; keep fallbacks
+              rpcUrls: [
+                SEPOLIA_RPC_PRIMARY,
+                SEPOLIA_RPC_SECONDARY,
+                SEPOLIA_RPC_TERTIARY,
+                SEPOLIA_RPC_QUATERNARY
+              ],
               blockExplorerUrls: [SEPOLIA_EXPLORER],
             }],
           });
@@ -289,7 +366,7 @@
       log("chainId (pre-tx):", chainNow);
 
       if (chainNow !== SEPOLIA_HEX) {
-        throw new Error(`Not on Sepolia (chainId=${chainNow}). Not sending from Mainnet. Approve the Sepolia switch in MetaMask, then tap the button again.`);
+        throw new Error(`Not on Sepolia (chainId=${chainNow}). Approve the Sepolia switch in MetaMask, then tap the button again.`);
       }
 
       const ethersProvider = new ethers.BrowserProvider(provider);
@@ -299,17 +376,7 @@
       log("to:", TO_ADDRESS);
       log("valueWei:", TEST_VALUE_WEI);
 
-      // --- Your balance test (kept) ---
-      const balHex = await provider.request({ method: "eth_getBalance", params: [account, "latest"] });
-      const balWeiRpc = BigInt(balHex);
-      log("balanceHex (eth_getBalance):", balHex);
-      log("balanceWei (eth_getBalance):", balWeiRpc.toString());
-      log("balanceETH (eth_getBalance):", ethers.formatEther(balWeiRpc));
-
-      const balWeiEthers = await ethersProvider.getBalance(account);
-      log("balanceWei (ethers.getBalance):", balWeiEthers.toString());
-      log("balanceETH (ethers.getBalance):", ethers.formatEther(balWeiEthers));
-      // -------------------------------
+      // ✅ Removed balance queries (they were only for debugging)
 
       showLoading("Approve transaction in MetaMask…");
       const tx = await signer.sendTransaction({
@@ -330,22 +397,35 @@
       logEl.textContent = "";
       hideError();
 
+      // flow marker (helps resume if page reloads while in MetaMask)
+      const existing = readFlow();
+      if (!isFlowFresh(existing) || existing.stage === "done") {
+        writeFlow({ startedAt: nowMs(), stage: "connecting", pageInstance: PAGE_INSTANCE_ID });
+      } else {
+        writeFlow({ stage: "connecting", pageInstance: PAGE_INSTANCE_ID });
+      }
+
       try {
         showLoading("Connecting wallet…");
         log("Tap MetaMask approvals when prompted, then return to Chrome if needed.");
 
         await connectWithRelayFallback();
+        writeFlow({ stage: "ensuring_sepolia" });
 
-        // ✅ must be confirmed Sepolia via eth_chainId before sending
         await ensureSepoliaNetwork();
+        writeFlow({ stage: "sending_tx" });
 
         await sendTestTxFromJS();
+
+        writeFlow({ stage: "done" });
+        clearFlow();
 
       } catch (e) {
         hideLoading();
         const msg = String(e?.message || e);
         log("error:", msg);
         showError(msg);
+        writeFlow({ stage: "error", lastError: msg, pageInstance: PAGE_INSTANCE_ID });
         log("If MetaMask opened, approve prompts then come back and tap the SAME button again.");
       } finally {
         btnDoIt.disabled = false;
