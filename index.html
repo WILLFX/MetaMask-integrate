@@ -12,8 +12,8 @@
     #loadingMessage, #errorMessage { margin-top: 10px; }
   </style>
 </head>
-
 <body>
+
   <button id="btnDoIt">Send Test Tx (from JS)</button>
   <div id="loadingMessage" style="display:none;">Working…</div>
   <div id="errorMessage" style="display:none; color: red;"></div>
@@ -23,6 +23,7 @@
   <script src="https://cdn.jsdelivr.net/npm/ethers@6.13.2/dist/ethers.umd.min.js"></script>
 
   <script>
+    // ---------------- UI ----------------
     const logEl = document.getElementById("log");
     const btnDoIt = document.getElementById("btnDoIt");
     const loadingMessage = document.getElementById("loadingMessage");
@@ -34,6 +35,7 @@
     function showError(msg) { errorMessage.style.display = "block"; errorMessage.textContent = msg; }
     function hideError() { errorMessage.style.display = "none"; }
 
+    // ---------------- CONFIG ----------------
     const projectId = "19acc37cc9d91b4b39b0cca952297654";
     const RELAYS = ["wss://relay.walletconnect.com", "wss://relay.walletconnect.org"];
     let relayIdx = 0;
@@ -43,12 +45,13 @@
     const SEPOLIA_RPC_PRIMARY = "https://rpc.sepolia.org";
     const SEPOLIA_RPC_SECONDARY = "https://rpc2.sepolia.org";
     const SEPOLIA_EXPLORER = "https://sepolia.etherscan.io";
-
     const TO_ADDRESS = "0x789c7d1f7dfef60a00ff6f7a87ba426bde521b08";
     const TEST_VALUE_WEI = "600000000000000"; // 0.0006
 
+    // ---------------- STATE ----------------
     let provider = null;
     let wcUri = null;
+
     let busy = false;
     let connectInFlight = false;
     let openedMmThisAttempt = false;
@@ -105,7 +108,6 @@
       if (!WC?.EthereumProvider) throw new Error("WalletConnect EthereumProvider not loaded");
 
       const relayUrl = RELAYS[relayIdx];
-
       provider = await WC.EthereumProvider.init({
         projectId,
         relayUrl,
@@ -128,7 +130,6 @@
       });
 
       provider.on("connect", (info) => log("connected:", JSON.stringify(info)));
-
       provider.on("disconnect", () => {
         log("disconnected");
         wcUri = null;
@@ -161,9 +162,9 @@
       throw new Error(`Timed out waiting for ${label} (${Math.round(timeoutMs/1000)}s).`);
     }
 
+    // Your protocol: always disconnect existing session first
     async function connectWithRelayFallback() {
       await ensureProvider();
-
       if (provider?.session) {
         log("Existing WC session found. Disconnecting to avoid stale account/session…");
         try { await provider.disconnect(); } catch (_) {}
@@ -174,7 +175,6 @@
 
       openedMmThisAttempt = false;
       connectInFlight = true;
-
       try {
         await provider.connect();
       } catch (e) {
@@ -191,6 +191,7 @@
       }
     }
 
+    // ✅ The actual fix: do NOT trust events; only trust eth_chainId
     async function ensureSepoliaNetwork() {
       showLoading("Ensuring Sepolia…");
 
@@ -212,14 +213,6 @@
           params: [{ chainId: SEPOLIA_HEX }],
         });
         log("Switch requested ✅");
-
-        await waitFor(async () => {
-          const c = await readChain();
-          return c === SEPOLIA_HEX;
-        }, { timeoutMs: 90000, intervalMs: 500 });
-
-        log("Switched to Sepolia ✅");
-        window.location.href = "chrome://";  // Redirect back to Chrome after switch
       } catch (e) {
         const code = e && (e.code ?? e?.data?.originalError?.code);
         log("switch error:", e?.message || e);
@@ -242,11 +235,44 @@
           });
 
           log("Added + switched requested ✅");
-          window.location.href = "chrome://";  // Redirect back to Chrome after switch
+        } else {
+          throw e;
         }
       }
 
+      showLoading("Waiting for Sepolia to settle…");
+      await waitFor(async () => (await readChain()) === SEPOLIA_HEX, {
+        timeoutMs: 90000,
+        intervalMs: 500,
+        label: "Sepolia chainId via eth_chainId"
+      });
+
+      log("Switched to Sepolia ✅");
       hideLoading();
+    }
+
+    async function getAuthorizedAccount() {
+      const a0 = Array.isArray(lastAccounts) && lastAccounts[0] ? lastAccounts[0] : null;
+      if (a0) return a0;
+
+      try {
+        const req = await provider.request({ method: "eth_requestAccounts" });
+        if (Array.isArray(req) && req[0]) return req[0];
+      } catch (e) {
+        log("eth_requestAccounts error:", e?.message || e);
+      }
+
+      showLoading("Waiting for MetaMask account approval…");
+      await waitFor(async () => {
+        const a = Array.isArray(lastAccounts) && lastAccounts[0] ? lastAccounts[0] : null;
+        if (a) return true;
+        const ea = await provider.request({ method: "eth_accounts" }).catch(() => []);
+        if (Array.isArray(ea) && ea[0]) { lastAccounts = ea; return true; }
+        return false;
+      }, { timeoutMs: 90000, intervalMs: 500, label: "authorized account" });
+
+      hideLoading();
+      return lastAccounts[0];
     }
 
     async function sendTestTxFromJS() {
@@ -265,16 +291,6 @@
       log("signer:", account);
       log("to:", TO_ADDRESS);
       log("valueWei:", TEST_VALUE_WEI);
-
-      const balHex = await provider.request({ method: "eth_getBalance", params: [account, "latest"] });
-      const balWeiRpc = BigInt(balHex);
-      log("balanceHex (eth_getBalance):", balHex);
-      log("balanceWei (eth_getBalance):", balWeiRpc.toString());
-      log("balanceETH (eth_getBalance):", ethers.formatEther(balWeiRpc));
-
-      const balWeiEthers = await ethersProvider.getBalance(account);
-      log("balanceWei (ethers.getBalance):", balWeiEthers.toString());
-      log("balanceETH (ethers.getBalance):", ethers.formatEther(balWeiEthers));
 
       showLoading("Approve transaction in MetaMask…");
       const tx = await signer.sendTransaction({
@@ -300,9 +316,10 @@
         log("Tap MetaMask approvals when prompted, then return to Chrome if needed.");
 
         await connectWithRelayFallback();
-        await ensureSepoliaNetwork();
-        await sendTestTxFromJS();
 
+        await ensureSepoliaNetwork();
+
+        await sendTestTxFromJS();
       } catch (e) {
         hideLoading();
         const msg = String(e?.message || e);
@@ -317,4 +334,3 @@
   </script>
 </body>
 </html>
-
