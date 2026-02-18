@@ -23,7 +23,6 @@
   <script src="https://cdn.jsdelivr.net/npm/ethers@6.13.2/dist/ethers.umd.min.js"></script>
 
   <script>
-    // ---------------- UI ----------------
     const logEl = document.getElementById("log");
     const btnDoIt = document.getElementById("btnDoIt");
     const loadingMessage = document.getElementById("loadingMessage");
@@ -35,9 +34,7 @@
     function showError(msg) { errorMessage.style.display = "block"; errorMessage.textContent = msg; }
     function hideError() { errorMessage.style.display = "none"; }
 
-    // ---------------- CONFIG ----------------
     const projectId = "19acc37cc9d91b4b39b0cca952297654";
-
     const RELAYS = ["wss://relay.walletconnect.com", "wss://relay.walletconnect.org"];
     let relayIdx = 0;
 
@@ -50,10 +47,8 @@
     const TO_ADDRESS = "0x789c7d1f7dfef60a00ff6f7a87ba426bde521b08";
     const TEST_VALUE_WEI = "600000000000000"; // 0.0006
 
-    // ---------------- STATE ----------------
     let provider = null;
     let wcUri = null;
-
     let busy = false;
     let connectInFlight = false;
     let openedMmThisAttempt = false;
@@ -166,7 +161,6 @@
       throw new Error(`Timed out waiting for ${label} (${Math.round(timeoutMs/1000)}s).`);
     }
 
-    // Your protocol: always disconnect existing session first
     async function connectWithRelayFallback() {
       await ensureProvider();
 
@@ -197,7 +191,6 @@
       }
     }
 
-    // ✅ The actual fix: do NOT trust events; only trust eth_chainId
     async function ensureSepoliaNetwork() {
       showLoading("Ensuring Sepolia…");
 
@@ -219,6 +212,14 @@
           params: [{ chainId: SEPOLIA_HEX }],
         });
         log("Switch requested ✅");
+
+        await waitFor(async () => {
+          const c = await readChain();
+          return c === SEPOLIA_HEX;
+        }, { timeoutMs: 90000, intervalMs: 500 });
+
+        log("Switched to Sepolia ✅");
+        window.location.href = "chrome://";  // Redirect back to Chrome after switch
       } catch (e) {
         const code = e && (e.code ?? e?.data?.originalError?.code);
         log("switch error:", e?.message || e);
@@ -241,50 +242,16 @@
           });
 
           log("Added + switched requested ✅");
-        } else {
-          throw e;
+          window.location.href = "chrome://";  // Redirect back to Chrome after switch
         }
       }
 
-      showLoading("Waiting for Sepolia to settle…");
-      await waitFor(async () => (await readChain()) === SEPOLIA_HEX, {
-        timeoutMs: 90000,
-        intervalMs: 500,
-        label: "Sepolia chainId via eth_chainId"
-      });
-
-      log("Switched to Sepolia ✅");
       hideLoading();
-    }
-
-    async function getAuthorizedAccount() {
-      const a0 = Array.isArray(lastAccounts) && lastAccounts[0] ? lastAccounts[0] : null;
-      if (a0) return a0;
-
-      try {
-        const req = await provider.request({ method: "eth_requestAccounts" });
-        if (Array.isArray(req) && req[0]) return req[0];
-      } catch (e) {
-        log("eth_requestAccounts error:", e?.message || e);
-      }
-
-      showLoading("Waiting for MetaMask account approval…");
-      await waitFor(async () => {
-        const a = Array.isArray(lastAccounts) && lastAccounts[0] ? lastAccounts[0] : null;
-        if (a) return true;
-        const ea = await provider.request({ method: "eth_accounts" }).catch(() => []);
-        if (Array.isArray(ea) && ea[0]) { lastAccounts = ea; return true; }
-        return false;
-      }, { timeoutMs: 90000, intervalMs: 500, label: "authorized account" });
-
-      hideLoading();
-      return lastAccounts[0];
     }
 
     async function sendTestTxFromJS() {
       const account = await getAuthorizedAccount();
 
-      // ✅ HARD STOP: if we are not on Sepolia, we do NOT attempt a tx
       const chainNow = normalizeChainIdToHex(await provider.request({ method: "eth_chainId" }));
       log("chainId (pre-tx):", chainNow);
 
@@ -299,7 +266,6 @@
       log("to:", TO_ADDRESS);
       log("valueWei:", TEST_VALUE_WEI);
 
-      // --- Your balance test (kept) ---
       const balHex = await provider.request({ method: "eth_getBalance", params: [account, "latest"] });
       const balWeiRpc = BigInt(balHex);
       log("balanceHex (eth_getBalance):", balHex);
@@ -309,7 +275,6 @@
       const balWeiEthers = await ethersProvider.getBalance(account);
       log("balanceWei (ethers.getBalance):", balWeiEthers.toString());
       log("balanceETH (ethers.getBalance):", ethers.formatEther(balWeiEthers));
-      // -------------------------------
 
       showLoading("Approve transaction in MetaMask…");
       const tx = await signer.sendTransaction({
@@ -335,10 +300,7 @@
         log("Tap MetaMask approvals when prompted, then return to Chrome if needed.");
 
         await connectWithRelayFallback();
-
-        // ✅ must be confirmed Sepolia via eth_chainId before sending
         await ensureSepoliaNetwork();
-
         await sendTestTxFromJS();
 
       } catch (e) {
@@ -355,3 +317,4 @@
   </script>
 </body>
 </html>
+
