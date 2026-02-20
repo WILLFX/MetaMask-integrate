@@ -1,82 +1,61 @@
-This project demonstrates how to integrate MetaMask with WalletConnect v2 in a bare HTML dapp. It allows users to connect their MetaMask wallet, switch to the Sepolia test network (if not already on it), and view their balance on the Sepolia network using WalletConnect.
+# MetaMask Integrate (WalletConnect + ethers.js)
 
-The dapp is hosted and accessible on GitHub Pages at:
+Minimal one-page dApp that:
+- Connects a mobile wallet (WalletConnect v2)
+- Ensures **Sepolia** is selected
+- Sends a small **test transfer from JavaScript (ethers.js)** after the user approves
 
-Dapp URL: https://willfx.github.io/MetaMask-integrate/
+Live demo: https://willfx.github.io/MetaMask-integrate/
 
-Features:
+## What it does
+Single-button flow:
+1. Open wallet selector (WalletConnect)
+2. Connect wallet + approve in the wallet app
+3. Switch / confirm **Sepolia (11155111)**
+4. Create an **ethers.js signer** from the connected wallet provider
+5. Send a test transaction from JS
 
-MetaMask connection via WalletConnect v2: Easily connect your MetaMask wallet using WalletConnect.
+## Tech
+- WalletConnect Ethereum Provider (v2)
+- ethers.js (v6)
+- Static HTML (works on GitHub Pages)
 
-Auto-switch to Sepolia: The dapp automatically prompts the user to switch to the Sepolia test network if it’s not already active in MetaMask.
+## Configure
+Edit `index.html`:
 
-Display Balance: Once connected to Sepolia, the user's balance in ETH is shown.
+- WalletConnect Project ID:
+  ```js
+  const projectId = "YOUR_WALLETCONNECT_PROJECT_ID";
+   # MetaMask Integrate (WalletConnect + ethers.js
+  Sepolia recipient address:
 
-Getting Started
-1. Prerequisites
+const TO_ADDRESS = "0x...";
 
-To use this dapp, you will need:
+Amount (in wei):
 
-MetaMask app installed on your mobile device.
+const TEST_VALUE_WEI = "600000000000000"; // 0.0006 ETH
+Run locally
 
-A WalletConnect-compatible wallet (like MetaMask).
+Just open with a local server (recommended):
 
-Sepolia test network configured on MetaMask (this will be handled automatically if not already set up).
+VS Code Live Server, or
 
-2. How to Connect to MetaMask:
+python -m http.server
 
-Visit the hosted dapp URL: https://willfx.github.io/MetaMask-integrate/
-.
+Then visit:
 
-Click the Connect button to initiate the connection to your MetaMask wallet using WalletConnect.
+http://localhost:8000
 
-Once connected, MetaMask will ask you to approve the connection.
+Deploy (GitHub Pages)
 
-After approval, the dapp will automatically prompt for Sepolia network switching if necessary, and the Sepolia test network will be activated in MetaMask.
+Push to GitHub
 
-Your Sepolia ETH balance will be displayed on the dapp once the network switch is complete.
+Repo Settings → Pages → set source branch (e.g. main)
 
-3. How to Switch to Sepolia:
+Open the GitHub Pages URL
 
-After connection approval, if you're not already on the Sepolia test network, MetaMask will ask you to switch networks.
+Notes (mobile)
 
-Once approved, the Sepolia network will be selected, and your Sepolia balance will be shown in the dapp.
+The wallet app must be installed on the phone
 
-4. Troubleshooting:
-
-If MetaMask does not prompt you to switch networks, ensure that the Sepolia RPC URL is correctly set up in your MetaMask wallet.
-
-If the network switch is not successful, check that you approved the request in MetaMask.
-
-How the Code Works:
-WalletConnect Integration:
-
-The dapp uses WalletConnect v2 to interact with MetaMask. Here's a brief breakdown of how it works:
-
-Connect Button: The "Connect" button triggers the WalletConnect connection via a deep link (metamask://wc?uri= or https://metamask.app.link/wc?uri=).
-
-Display URI: WalletConnect generates a URI which MetaMask reads to establish a secure connection.
-
-Network Switching: Once the connection is established, the dapp checks if the Sepolia network is active. If not, it triggers a network switch using the wallet_switchEthereumChain and wallet_addEthereumChain methods.
-
-Balance Retrieval: After switching to Sepolia, the user's balance in ETH is fetched and displayed on the dapp.
-
-Deep Link Implementation:
-
-MetaMask Deep Link is used to handle the connection and chain-switching requests directly inside MetaMask:
-
-Scheme link: metamask://wc?uri=<walletconnect_uri>
-
-Universal link: https://metamask.app.link/wc?uri=<walletconnect_uri>
-
-The code follows these steps:
-
-Connect MetaMask using WalletConnect.
-
-Switch to Sepolia if necessary.
-
-Fetch and display the balance once connected to Sepolia.
-
-License
-
-This project is open-source and available under the MIT License.
+On Android, switching between Chrome and the wallet app may still require user action depending on OS/wallet behavior
