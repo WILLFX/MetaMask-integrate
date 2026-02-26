@@ -11,7 +11,7 @@
     #log { margin-top: 14px; white-space: pre-wrap; }
     #loadingMessage, #errorMessage { margin-top: 10px; }
 
-    /* Wallet picker modal */
+    /* Wallet picker modal (added) */
     #walletPickerOverlay {
       position: fixed; inset: 0;
       background: rgba(0,0,0,0.55);
@@ -49,6 +49,7 @@
       color: #fff;
       border: 1px solid rgba(255,255,255,0.18);
       border-radius: 10px;
+      cursor: pointer;
     }
     #walletPickerBody { padding: 12px; display: flex; flex-direction: column; gap: 10px; }
     #walletSearch {
@@ -86,18 +87,18 @@
       border-radius: 10px;
       background: rgba(255,255,255,0.08);
       flex: 0 0 auto;
+      object-fit: cover;
     }
     .walletMeta { display: flex; flex-direction: column; gap: 2px; }
     .walletName { font-size: 15px; font-weight: 650; }
     .walletHint { font-size: 12px; opacity: 0.75; }
-
     #walletPickerFooter {
       padding: 10px 12px;
       border-top: 1px solid rgba(255,255,255,0.10);
       font-size: 12px;
       opacity: 0.85;
     }
-    #walletPickerFooter code { opacity: 0.95; }
+    #walletPickerFooter code { opacity: 0.95; word-break: break-all; }
   </style>
 </head>
 
@@ -107,7 +108,7 @@
   <div id="errorMessage" style="display:none; color: red;"></div>
   <pre id="log"></pre>
 
-  <!-- Wallet picker modal -->
+  <!-- Wallet picker modal (added) -->
   <div id="walletPickerOverlay">
     <div id="walletPicker">
       <div id="walletPickerHeader">
@@ -119,7 +120,7 @@
         <div id="walletList"></div>
       </div>
       <div id="walletPickerFooter">
-        Powered by WalletGuide listings via <code>explorer-api.walletconnect.com</code>.
+        Listings from <code>explorer-api.walletconnect.com</code>
       </div>
     </div>
   </div>
@@ -134,6 +135,7 @@
     const loadingMessage = document.getElementById("loadingMessage");
     const errorMessage = document.getElementById("errorMessage");
 
+    // wallet picker elements (added)
     const walletPickerOverlay = document.getElementById("walletPickerOverlay");
     const walletPickerClose = document.getElementById("walletPickerClose");
     const walletSearch = document.getElementById("walletSearch");
@@ -152,7 +154,7 @@
       if (e.target === walletPickerOverlay) closeWalletPicker();
     });
 
-    // ---------------- CONFIG ----------------
+    // ---------------- CONFIG (state-0) ----------------
     const projectId = "19acc37cc9d91b4b39b0cca952297654";
 
     const RELAYS = ["wss://relay.walletconnect.com", "wss://relay.walletconnect.org"];
@@ -160,27 +162,34 @@
 
     const SEPOLIA = 11155111;
     const SEPOLIA_HEX = "0xaa36a7";
-    const SEPOLIA_RPC_PRIMARY = "https://rpc.sepolia.org";
-    const SEPOLIA_RPC_SECONDARY = "https://rpc2.sepolia.org";
+    const SEPOLIA_RPC_PRIMARY = "https://eth-sepolia.g.alchemy.com/v2/7meoZAwbjWt6m9on3Phcy";
+    const SEPOLIA_RPC_SECONDARY = "https://ethereum-sepolia.publicnode.com";
     const SEPOLIA_EXPLORER = "https://sepolia.etherscan.io";
 
     const TO_ADDRESS = "0x789c7d1f7dfef60a00ff6f7a87ba426bde521b08";
     const TEST_VALUE_WEI = "600000000000000"; // 0.0006
 
-    // ---------------- STATE ----------------
+    // ---------------- STATE (state-0) ----------------
     let provider = null;
     let wcUri = null;
 
     let busy = false;
     let connectInFlight = false;
-    let openedWalletThisAttempt = false;
+    let openedMmThisAttempt = false;
 
-    // last known from events
     let lastAccounts = [];
-    let lastChainId = null; // string like "0xaa36a7"
+    let lastChainId = null;
 
-    // Wallet list cache
+    // wallet picker state (added)
     let walletsCache = null;
+
+    function normalizeChainIdToHex(chainId) {
+      if (typeof chainId === "number") return ("0x" + chainId.toString(16)).toLowerCase();
+      const s = String(chainId).trim().toLowerCase();
+      if (s.startsWith("0x")) return s;
+      if (/^\d+$/.test(s)) return ("0x" + Number(s).toString(16)).toLowerCase();
+      return s;
+    }
 
     function isRelayishError(e) {
       const msg = String((e && (e.message ?? e)) ?? "");
@@ -193,98 +202,31 @@
       );
     }
 
-    async function teardownProvider() {
-      try { await provider?.disconnect?.(); } catch (_) {}
-      provider = null;
-      wcUri = null;
-      connectInFlight = false;
-      openedWalletThisAttempt = false;
-      lastAccounts = [];
-      lastChainId = null;
+    // ---------------- Wallet Choice Persistence (added) ----------------
+    const WALLET_CHOICE_KEY = "wc_wallet_choice_v1";
+    function getSavedWalletChoice() {
+      try {
+        const raw = localStorage.getItem(WALLET_CHOICE_KEY);
+        if (!raw) return null;
+        const j = JSON.parse(raw);
+        if (!j || !j.base) return null;
+        return j;
+      } catch (_) { return null; }
+    }
+    function saveWalletChoice(choice) {
+      try { localStorage.setItem(WALLET_CHOICE_KEY, JSON.stringify(choice)); } catch (_) {}
     }
 
-    async function ensureProvider() {
-      if (provider) return provider;
-
-      const WC = window["@walletconnect/ethereum-provider"];
-      if (!WC?.EthereumProvider) throw new Error("WalletConnect EthereumProvider not loaded");
-
-      const relayUrl = RELAYS[relayIdx];
-
-      provider = await WC.EthereumProvider.init({
-        projectId,
-        relayUrl,
-        showQrModal: false,
-        metadata: {
-          name: "WC + ethers One Button",
-          description: "Android Chrome -> Wallet approve -> JS signer (ethers)",
-          url: location.origin,
-          icons: ["https://metamask.io/images/favicon-32.png"],
-        },
-        chains: [SEPOLIA],
-        optionalChains: [SEPOLIA],
-        rpcMap: { [SEPOLIA]: SEPOLIA_RPC_PRIMARY },
-      });
-
-      provider.on("display_uri", async (uri) => {
-        wcUri = uri;
-        log("display_uri ready");
-
-        // NEW: show wallet picker (multi-vendor)
-        if (connectInFlight) {
-          try {
-            await showWalletChoices();
-          } catch (e) {
-            log("wallet list error:", e?.message || e);
-            // fallback: if wallet list fails, at least let user copy URI manually (debug)
-            openWalletPicker();
-            walletListEl.innerHTML = `<div style="opacity:.9;padding:8px">
-              Could not load wallet list. Try again, or use MetaMask directly.<br/><br/>
-              <code style="word-break:break-all">${String(wcUri)}</code>
-            </div>`;
-          }
-        }
-      });
-
-      provider.on("connect", (info) => log("connected:", JSON.stringify(info)));
-
-      provider.on("disconnect", () => {
-        log("disconnected");
-        wcUri = null;
-        connectInFlight = false;
-        openedWalletThisAttempt = false;
-        lastAccounts = [];
-        lastChainId = null;
-      });
-
-      provider.on("accountsChanged", (accounts) => {
-        lastAccounts = Array.isArray(accounts) ? accounts : [];
-        log("accountsChanged:", JSON.stringify(lastAccounts));
-      });
-
-      provider.on("chainChanged", (chainId) => {
-        lastChainId = String(chainId).toLowerCase();
-        log("chainChanged:", lastChainId);
-      });
-
-      log("Using relay:", relayUrl);
-      return provider;
-    }
-
-    // ---------------- Wallet Picker (Explorer API) ----------------
     function isAndroid() {
       return /Android/i.test(navigator.userAgent || "");
     }
 
-    // Build logo URL from Explorer API logo endpoint
     function logoUrl(imageId) {
       if (!imageId) return "";
-      // GET /v3/logo/:size/:image_id?projectId=... :contentReference[oaicite:1]{index=1}
       return `https://explorer-api.walletconnect.com/v3/logo/md/${encodeURIComponent(imageId)}?projectId=${encodeURIComponent(projectId)}`;
     }
 
     function normalizeWalletsResponse(json) {
-      // Explorer API commonly returns { listings: { id: {...}, ... }, total, ... } :contentReference[oaicite:2]{index=2}
       const listings = json?.listings ?? json?.data ?? json;
       const arr = Array.isArray(listings) ? listings : Object.values(listings || {});
       return arr.filter(Boolean);
@@ -293,7 +235,6 @@
     async function fetchWallets() {
       if (walletsCache) return walletsCache;
 
-      // GET /v3/wallets?projectId=...&platforms=...&sdks=... :contentReference[oaicite:3]{index=3}
       const platforms = isAndroid() ? "android" : "ios";
       const url =
         `https://explorer-api.walletconnect.com/v3/wallets` +
@@ -302,16 +243,23 @@
         `&platforms=${encodeURIComponent(platforms)}` +
         `&sdks=sign_v2`;
 
-      const res = await fetch(url, { mode: "cors" });
+      // timeout so UI doesn't hang forever
+      const controller = new AbortController();
+      const t = setTimeout(() => controller.abort(), 8000);
+
+      const res = await fetch(url, { mode: "cors", signal: controller.signal });
+      clearTimeout(t);
+
       if (!res.ok) throw new Error(`Explorer API failed (${res.status})`);
       const json = await res.json();
 
       let wallets = normalizeWalletsResponse(json);
 
-      // Keep wallets that have at least one mobile link
-      wallets = wallets.filter(w => w?.mobile?.universal || w?.mobile?.native || w?.desktop?.universal || w?.desktop?.native);
+      wallets = wallets.filter(w =>
+        w?.mobile?.universal || w?.mobile?.native || w?.desktop?.universal || w?.desktop?.native
+      );
 
-      // Sort MetaMask first if present
+      // MetaMask first
       wallets.sort((a, b) => {
         const an = String(a?.name || "").toLowerCase();
         const bn = String(b?.name || "").toLowerCase();
@@ -325,24 +273,84 @@
       return walletsCache;
     }
 
+    // ✅ FIXED: always inject current wcUri, never return stale base
     function buildWcDeepLink(base, uri) {
       if (!base || !uri) return null;
-      const enc = encodeURIComponent(uri);
 
-      // Most "universal" links can accept ?uri=... or &uri=...
-      if (base.startsWith("http")) {
-        if (base.includes("uri=")) {
-          // common case: base ends with "uri=" already
-          return base.endsWith("uri=") ? (base + enc) : base;
-        }
-        const sep = base.includes("?") ? "&" : "?";
-        return `${base}${sep}uri=${enc}`;
+      const baseStr = String(base);
+
+      // MetaMask: harden (prevents "page doesn't exist" due to listing weirdness)
+      if (baseStr.includes("metamask.app.link")) {
+        return `https://metamask.app.link/wc?uri=${encodeURIComponent(uri)}`;
       }
 
-      // Native schemes are inconsistent; try a best-effort fallback
-      if (base.endsWith(":")) return `${base}//wc?uri=${enc}`;
-      if (base.includes("://")) return `${base}wc?uri=${enc}`;
+      // HTTP(s): set/replace ?uri=
+      if (baseStr.startsWith("http")) {
+        try {
+          const u = new URL(baseStr);
+          u.searchParams.set("uri", uri);
+          return u.toString();
+        } catch (_) {
+          // fallback below
+        }
+      }
+
+      const enc = encodeURIComponent(uri);
+
+      // if base already contains uri=..., replace it
+      if (baseStr.includes("uri=")) {
+        return baseStr.replace(/uri=[^&]*/i, `uri=${enc}`);
+      }
+
+      // Native schemes
+      if (baseStr.endsWith(":")) return `${baseStr}//wc?uri=${enc}`;
+      if (baseStr.includes("://")) return `${baseStr}wc?uri=${enc}`;
       return null;
+    }
+
+    // More reliable MetaMask open (scheme first, fallback to universal)
+    function openMetaMaskUniversalOrNative(universalLink) {
+      const m = universalLink.match(/^https:\/\/metamask\.app\.link\/wc\?uri=(.+)$/i);
+      if (!m) {
+        location.href = universalLink;
+        return;
+      }
+      const uriEnc = m[1];
+      const nativeLink = `metamask://wc?uri=${uriEnc}`;
+
+      // try native first
+      location.href = nativeLink;
+
+      // fallback
+      setTimeout(() => {
+        location.href = universalLink;
+      }, 700);
+    }
+
+    // state-0 function name preserved: now opens either chosen wallet or defaults to MetaMask
+    function openMetaMaskViaWcUri(reason = "") {
+      if (!wcUri) return;
+      if (openedMmThisAttempt) return; // open once
+      openedMmThisAttempt = true;
+
+      const saved = getSavedWalletChoice();
+      let link = null;
+
+      if (saved?.base) {
+        link = buildWcDeepLink(saved.base, wcUri);
+      }
+
+      // default MetaMask link if no saved wallet
+      if (!link) link = `https://metamask.app.link/wc?uri=${encodeURIComponent(wcUri)}`;
+
+      log("Opening wallet", reason ? `| ${reason}` : "");
+      log(link);
+
+      if (String(link).startsWith("https://metamask.app.link/wc?uri=")) {
+        openMetaMaskUniversalOrNative(link);
+      } else {
+        location.href = link;
+      }
     }
 
     function renderWalletList(wallets, filterText = "") {
@@ -375,7 +383,7 @@
 
         const hint = document.createElement("div");
         hint.className = "walletHint";
-        hint.textContent = "Tap to open and approve";
+        hint.textContent = "Tap once to select (future connects won’t ask again)";
 
         meta.appendChild(name);
         meta.appendChild(hint);
@@ -385,28 +393,27 @@
 
         row.onclick = () => {
           if (!wcUri) return;
-          if (openedWalletThisAttempt) return;
-          openedWalletThisAttempt = true;
 
+          const nm = String(w?.name || "");
           const base =
             w?.mobile?.universal ||
             w?.mobile?.native ||
             w?.desktop?.universal ||
-            w?.desktop?.native;
+            w?.desktop?.native ||
+            "";
 
-          const link = buildWcDeepLink(String(base || ""), wcUri);
-          if (!link) {
-            showError("Wallet link not available for this wallet entry.");
-            openedWalletThisAttempt = false;
-            return;
-          }
+          // Persist choice
+          const chosenBase = nm.toLowerCase() === "metamask"
+            ? "https://metamask.app.link/wc"
+            : String(base);
+
+          saveWalletChoice({ name: nm, base: chosenBase });
 
           closeWalletPicker();
-          log("Opening wallet:", w?.name || "");
-          log(link);
 
-          // IMPORTANT: use a direct navigation triggered by user tap (more reliable than async auto-open)
-          location.href = link;
+          // Open immediately (user gesture)
+          openedMmThisAttempt = false; // allow open now
+          openMetaMaskViaWcUri(`picked: ${nm}`);
         };
 
         walletListEl.appendChild(row);
@@ -415,14 +422,95 @@
 
     async function showWalletChoices() {
       const wallets = await fetchWallets();
-      renderWalletList(wallets, walletSearch.value);
-
-      walletSearch.oninput = () => renderWalletList(wallets, walletSearch.value);
       walletSearch.value = "";
+      walletSearch.oninput = () => renderWalletList(wallets, walletSearch.value);
+      renderWalletList(wallets, "");
       openWalletPicker();
     }
 
-    // ---------------- Helpers ----------------
+    // ---------------- state-0 provider lifecycle ----------------
+    async function teardownProvider() {
+      try { await provider?.disconnect?.(); } catch (_) {}
+      provider = null;
+      wcUri = null;
+      connectInFlight = false;
+      openedMmThisAttempt = false;
+      lastAccounts = [];
+      lastChainId = null;
+    }
+
+    async function ensureProvider() {
+      if (provider) return provider;
+
+      const WC = window["@walletconnect/ethereum-provider"];
+      if (!WC?.EthereumProvider) throw new Error("WalletConnect EthereumProvider not loaded");
+
+      const relayUrl = RELAYS[relayIdx];
+
+      provider = await WC.EthereumProvider.init({
+        projectId,
+        relayUrl,
+        showQrModal: false,
+        metadata: {
+          name: "WC + ethers One Button",
+          description: "Android Chrome -> Wallet approve -> JS signer (ethers)",
+          url: location.origin,
+          icons: ["https://metamask.io/images/favicon-32.png"],
+        },
+        chains: [SEPOLIA],
+        optionalChains: [SEPOLIA],
+        rpcMap: { [SEPOLIA]: SEPOLIA_RPC_PRIMARY },
+      });
+
+      provider.on("display_uri", async (uri) => {
+        wcUri = uri;
+        log("display_uri ready");
+
+        if (!connectInFlight) return;
+
+        const saved = getSavedWalletChoice();
+        if (saved?.base) {
+          // Do NOT show picker again
+          openMetaMaskViaWcUri("saved wallet");
+          return;
+        }
+
+        // First time only
+        try {
+          await showWalletChoices();
+        } catch (e) {
+          log("wallet list error:", e?.message || e);
+          // fallback picker shows only MetaMask
+          renderWalletList([{ name: "MetaMask", image_id: null, mobile: { universal: "https://metamask.app.link/wc" }}], "");
+          openWalletPicker();
+        }
+      });
+
+      provider.on("connect", (info) => log("connected:", JSON.stringify(info)));
+
+      provider.on("disconnect", () => {
+        log("disconnected");
+        wcUri = null;
+        connectInFlight = false;
+        openedMmThisAttempt = false;
+        lastAccounts = [];
+        lastChainId = null;
+      });
+
+      provider.on("accountsChanged", (accounts) => {
+        lastAccounts = Array.isArray(accounts) ? accounts : [];
+        log("accountsChanged:", JSON.stringify(lastAccounts));
+      });
+
+      provider.on("chainChanged", (chainId) => {
+        lastChainId = normalizeChainIdToHex(chainId);
+        log("chainChanged:", lastChainId);
+      });
+
+      log("Using relay:", relayUrl);
+      return provider;
+    }
+
     async function waitFor(fn, { timeoutMs = 90000, intervalMs = 400, label = "condition" } = {}) {
       const start = Date.now();
       while (Date.now() - start < timeoutMs) {
@@ -432,10 +520,10 @@
       throw new Error(`Timed out waiting for ${label} (${Math.round(timeoutMs/1000)}s).`);
     }
 
+    // ---------------- state-0 flow (UNCHANGED) ----------------
     async function connectWithRelayFallback() {
       await ensureProvider();
 
-      // You want "fresh": disconnect any existing session first
       if (provider?.session) {
         log("Existing WC session found. Disconnecting to avoid stale account/session…");
         try { await provider.disconnect(); } catch (_) {}
@@ -444,7 +532,7 @@
         lastChainId = null;
       }
 
-      openedWalletThisAttempt = false;
+      openedMmThisAttempt = false;
       connectInFlight = true;
 
       try {
@@ -466,16 +554,12 @@
     async function ensureSepoliaNetwork() {
       showLoading("Ensuring Sepolia…");
 
-      if (lastChainId === SEPOLIA_HEX) {
-        log("Already on Sepolia ✅ (from event)");
-        hideLoading();
-        return;
-      }
+      const readChain = async () => normalizeChainIdToHex(await provider.request({ method: "eth_chainId" }));
 
-      const currentHex = String(await provider.request({ method: "eth_chainId" })).toLowerCase();
-      log("current chainId:", currentHex);
+      let current = await readChain();
+      log("current chainId:", current);
 
-      if (currentHex === SEPOLIA_HEX) {
+      if (current === SEPOLIA_HEX) {
         log("Already on Sepolia ✅");
         hideLoading();
         return;
@@ -483,7 +567,10 @@
 
       showLoading("Approve network switch to Sepolia in wallet…");
       try {
-        await provider.request({ method: "wallet_switchEthereumChain", params: [{ chainId: SEPOLIA_HEX }] });
+        await provider.request({
+          method: "wallet_switchEthereumChain",
+          params: [{ chainId: SEPOLIA_HEX }],
+        });
         log("Switch requested ✅");
       } catch (e) {
         const code = e && (e.code ?? e?.data?.originalError?.code);
@@ -500,7 +587,12 @@
               blockExplorerUrls: [SEPOLIA_EXPLORER],
             }],
           });
-          await provider.request({ method: "wallet_switchEthereumChain", params: [{ chainId: SEPOLIA_HEX }] });
+
+          await provider.request({
+            method: "wallet_switchEthereumChain",
+            params: [{ chainId: SEPOLIA_HEX }],
+          });
+
           log("Added + switched requested ✅");
         } else {
           throw e;
@@ -508,11 +600,11 @@
       }
 
       showLoading("Waiting for Sepolia to settle…");
-      await waitFor(async () => {
-        if (lastChainId === SEPOLIA_HEX) return true;
-        const c = String(await provider.request({ method: "eth_chainId" })).toLowerCase();
-        return c === SEPOLIA_HEX;
-      }, { timeoutMs: 90000, intervalMs: 500, label: "Sepolia chainId" });
+      await waitFor(async () => (await readChain()) === SEPOLIA_HEX, {
+        timeoutMs: 90000,
+        intervalMs: 500,
+        label: "Sepolia chainId via eth_chainId"
+      });
 
       log("Switched to Sepolia ✅");
       hideLoading();
@@ -545,6 +637,14 @@
     async function sendTestTxFromJS() {
       const account = await getAuthorizedAccount();
 
+      // ✅ HARD STOP: if we are not on Sepolia, we do NOT attempt a tx
+      const chainNow = normalizeChainIdToHex(await provider.request({ method: "eth_chainId" }));
+      log("chainId (pre-tx):", chainNow);
+
+      if (chainNow !== SEPOLIA_HEX) {
+        throw new Error(`Not on Sepolia (chainId=${chainNow}). Not sending from Mainnet. Approve the Sepolia switch in wallet, then tap the button again.`);
+      }
+
       const ethersProvider = new ethers.BrowserProvider(provider);
       const signer = await ethersProvider.getSigner(account);
 
@@ -552,16 +652,16 @@
       log("to:", TO_ADDRESS);
       log("valueWei:", TEST_VALUE_WEI);
 
-      // (kept) simple pre-tx sanity reads
-      const chainIdNow = await provider.request({ method: "eth_chainId" }).catch(() => null);
-      log("chainId (pre-tx):", String(chainIdNow));
+      // --- balance test kept ---
+      const balHex = await provider.request({ method: "eth_getBalance", params: [account, "latest"] });
+      const balWeiRpc = BigInt(balHex);
+      log("balanceHex (eth_getBalance):", balHex);
+      log("balanceWei (eth_getBalance):", balWeiRpc.toString());
+      log("balanceETH (eth_getBalance):", ethers.formatEther(balWeiRpc));
 
-      const balHex = await provider.request({ method: "eth_getBalance", params: [account, "latest"] }).catch(() => null);
-      log("balanceHex (eth_getBalance):", String(balHex));
-
-      const balWei = await ethersProvider.getBalance(account).catch(() => 0n);
-      log("balanceWei (ethers.getBalance):", String(balWei));
-      log("balanceETH (ethers.getBalance):", ethers.formatEther(balWei));
+      const balWeiEthers = await ethersProvider.getBalance(account);
+      log("balanceWei (ethers.getBalance):", balWeiEthers.toString());
+      log("balanceETH (ethers.getBalance):", ethers.formatEther(balWeiEthers));
 
       showLoading("Approve transaction in wallet…");
       const tx = await signer.sendTransaction({
@@ -584,7 +684,7 @@
 
       try {
         showLoading("Connecting wallet…");
-        log("Tap wallet approvals when prompted, then return to Chrome if needed.");
+        log("Approvals happen in the wallet app. Return to Chrome when done.");
 
         await connectWithRelayFallback();
         await ensureSepoliaNetwork();
